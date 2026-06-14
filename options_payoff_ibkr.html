@@ -588,7 +588,11 @@ function importTickerPositions(kind){
       imported++;
     });
   }
-  renderOptions(); renderUnderlyings(); rebuildSlider(); updateChart();
+  renderOptions(); renderUnderlyings(); rebuildSlider(); 
+  document.getElementById('rangeAuto').checked=true;
+  document.getElementById('rangeMin').disabled=true;
+  document.getElementById('rangeMax').disabled=true;
+  updateChart();
   showToast(imported>0?`Imported ${imported} position(s)`:'Nothing new to import (all already present)', imported>0?'ok':'',2500);
 }
 
