@@ -353,6 +353,7 @@ let ibkrConnected=false;
 let ibkrPortfolio={options:[], underlyings:[]};   // raw from proxy
 let activeTickers=[];       // currently selected ticker filter
 let allTickers=[];          // tickers discovered from portfolio
+let tickerPrices={};        // cached underlying prices
 
 /* ═══════════════════════════════════════════════════════
    TOAST / LOADING
@@ -411,6 +412,7 @@ function disconnectIBKR(){
   ibkrPortfolio={options:[],underlyings:[]};
   allTickers=[];
   activeTickers=[];
+  tickerPrices={};
   setConnectionState('','not connected');
   renderTickerBar();
   showToast('Disconnected');
@@ -511,6 +513,7 @@ async function fetchIVForTicker(t){
         }
       }
     });
+    if(j.underlyingPrice) { tickerPrices[t]=j.underlyingPrice; }
     renderOptions(); updateChart();
     const total=options.filter(o=>o.symbol===t).length;
     showToast(`${t} IV: ${updated}/${total} updated`,'ok',3000);
@@ -527,7 +530,9 @@ function removeTicker(t){
   // also remove any ibkr positions for this ticker from portfolio cache
   ibkrPortfolio.options=ibkrPortfolio.options.filter(o=>o.symbol!==t);
   ibkrPortfolio.underlyings=ibkrPortfolio.underlyings.filter(u=>u.symbol!==t);
+  delete tickerPrices[t];
   renderTickerBar();
+  if(chart) chart.update('none');
 }
 
 function addTickerBtn(){
@@ -595,6 +600,19 @@ function importTickerPositions(kind){
   document.getElementById('rangeMax').disabled=true;
   updateChart();
   showToast(imported>0?`Imported ${imported} position(s)`:'Nothing new to import (all already present)', imported>0?'ok':'',2500);
+  activeTickers.forEach(t => fetchTickerPrice(t));
+}
+
+async function fetchTickerPrice(t){
+  if(!ibkrConnected) return;
+  const url=document.getElementById('proxyUrl').value.trim().replace(/\/$/,'');
+  try{
+    const res=await fetch(url+'/price?symbol='+encodeURIComponent(t));
+    if(res.ok){
+      const j=await res.json();
+      if(j.price){ tickerPrices[t]=j.price; if(chart) chart.update('none'); }
+    }
+  }catch(e){}
 }
 
 function ibkrKey(o){ return `${o.symbol}|${o.type}|${o.strike}|${o.expiry}`; }
@@ -759,6 +777,10 @@ function buildGrid(lo,hi){
   for(let i=0;i<500;i++) pts.add(+(lo+(hi-lo)*i/499).toFixed(8));
   for(const o of options) if(o.enabled&&o.strike>=lo&&o.strike<=hi) pts.add(o.strike);
   for(const bv of computeBreakevens()) if(bv>=lo&&bv<=hi) pts.add(bv);
+  activeTickers.forEach(t => {
+    const tp = tickerPrices[t];
+    if(tp != null && tp >= lo && tp <= hi) pts.add(+parseFloat(tp).toFixed(8));
+  });
   return [...pts].filter(p=>p>=lo&&p<=hi).sort((a,b)=>a-b);
 }
 function getRange(){
@@ -797,6 +819,35 @@ const C_POS='#1D9E75',C_NEG='#E24B4A';
 function expirySegColor(ctx){ const i=ctx.p1DataIndex; if(i<1||i>=currentPrices.length) return C_POS; return payoffAt((currentPrices[i-1]+currentPrices[i])/2)>=0?C_POS:C_NEG; }
 function bsSegColor(ctx){ const i=ctx.p1DataIndex; if(i<1||i>=currentPrices.length) return C_POS; const v=bsPayoffAt((currentPrices[i-1]+currentPrices[i])/2); return(v===null||v>=0)?C_POS:C_NEG; }
 
+const currentPricePlugin = {
+  id: 'currentPriceLine',
+  beforeDraw: (chart) => {
+    const ctx = chart.ctx;
+    const xAxis = chart.scales.x;
+    const yAxis = chart.scales.y;
+    activeTickers.forEach(t => {
+      const price = tickerPrices[t];
+      if(price && price >= xAxis.min && price <= xAxis.max) {
+        const x = xAxis.getPixelForValue(price);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, yAxis.top);
+        ctx.lineTo(x, yAxis.bottom);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(212, 160, 32, 0.4)';
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(212, 160, 32, 0.7)';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        const pStr = price < 1 ? price.toFixed(4) : price.toFixed(2);
+        ctx.fillText(t + ' @ ' + pStr, x, yAxis.top + 12);
+        ctx.restore();
+      }
+    });
+  }
+};
+
 function updateChart(){
   const range=getRange(); if(!range) return;
   const {lo,hi}=range;
@@ -818,7 +869,8 @@ function updateChart(){
           y:{ticks:{font:{family:'monospace',size:10},color:'#5a5a58',callback:v=>parseFloat((+v).toFixed(4))},
              grid:{color:c=>c.tick.value===0?'rgba(150,148,142,.5)':'rgba(80,80,75,.25)',lineWidth:c=>c.tick.value===0?1.5:.5},border:{display:false}}
         }
-      }
+      },
+      plugins:[currentPricePlugin]
     });
     setupCrosshair();
   } else {
@@ -837,10 +889,23 @@ function setupCrosshair(){
   wrap.addEventListener('mouseleave',hide);
   wrap.addEventListener('mousemove',e=>{
     if(!chart||!currentPrices.length){hide();return;}
-    const rect=wrap.getBoundingClientRect(), mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    const rect=wrap.getBoundingClientRect();
+    let mx=e.clientX-rect.left;
+    const my=e.clientY-rect.top;
     const ca=chart.chartArea;
     if(mx<ca.left||mx>ca.right||my<ca.top||my>ca.bottom){hide();return;}
-    const price=chart.scales.x.getValueForPixel(mx); if(!isFinite(price)){hide();return;}
+    
+    let price=chart.scales.x.getValueForPixel(mx); if(!isFinite(price)){hide();return;}
+    
+    // Snap exactly to current price if hovered nearby (within 6px)
+    for(const t of activeTickers){
+      const tp=tickerPrices[t];
+      if(tp != null){
+        const px=chart.scales.x.getPixelForValue(tp);
+        if(Math.abs(mx-px)<=6 && px>=ca.left && px<=ca.right){ price=tp; mx=px; break; }
+      }
+    }
+
     const pExp=payoffAt(price), pBS=bsPayoffAt(price), hasBs=pBS!==null;
     const py=chart.scales.y.getPixelForValue(pExp);
     document.getElementById('xhairV').style.cssText=`display:block;left:${mx}px`;
@@ -882,7 +947,7 @@ function updateMetrics(){
 /* ═══════════════════════════════════════════════════════
    TABLE HELPERS
 ═══════════════════════════════════════════════════════ */
-function clearAll(){ options=[]; underlyings=[]; renderOptions(); renderUnderlyings(); rebuildSlider(); updateChart(); }
+function clearAll(){ options=[]; underlyings=[]; tickerPrices={}; renderOptions(); renderUnderlyings(); rebuildSlider(); updateChart(); }
 function addOption(type='put',strike=100,premium=1,mult=100,pos=1,iv=20,expiry='',enabled=true){
   options.push({id:++optId,type,strike,premium,mult,pos,iv,expiry,enabled,source:'manual'});
   renderOptions(); rebuildSlider(); updateChart();

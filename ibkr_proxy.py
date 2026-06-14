@@ -60,9 +60,14 @@ class IBApp(EWrapper, EClient):
         self._acct_done = threading.Event()
 
         # IV state
-        self._iv_data = {}   # reqId → float (0–1)
+        self._iv_data = {}   # reqId → dict: {"iv": float, "undPrice": float}
         self._iv_events = {}   # reqId → threading.Event
         self._iv_lock = threading.Lock()
+
+        # Price state
+        self._price_data = {}   # reqId → float
+        self._price_events = {}  # reqId → threading.Event
+        self._price_lock = threading.Lock()
 
         # Serialise all TWS request sequences (portfolio vs IV)
         self._request_lock = threading.Lock()
@@ -103,6 +108,7 @@ class IBApp(EWrapper, EClient):
         self.portfolio_items.append({
             "contract":      contract,
             "position":      position,
+            "marketPrice":   marketPrice,
             "averageCost":   averageCost,
             "unrealizedPNL": unrealizedPNL,
             "realizedPNL":   realizedPNL,
@@ -113,7 +119,14 @@ class IBApp(EWrapper, EClient):
 
     # ── Market data callbacks ────────────────────────────────
 
-    def tickPrice(self, reqId, tickType, price, attrib): pass
+    def tickPrice(self, reqId, tickType, price, attrib):
+        # 4=Last, 68=Delayed Last, 9=Close, 75=Delayed Close
+        if tickType in (4, 68, 9, 75) and price > 0:
+            with self._price_lock:
+                if reqId in self._price_events:
+                    self._price_data[reqId] = price
+                    self._price_events[reqId].set()
+
     def tickSize(self, reqId, tickType, size): pass
     def tickSnapshotEnd(self, reqId): pass
 
@@ -124,7 +137,8 @@ class IBApp(EWrapper, EClient):
                 f"  [tick-gen] reqId={reqId} tickType={tickType} val={value:.4f}")
             with self._iv_lock:
                 if reqId not in self._iv_data:
-                    self._iv_data[reqId] = value
+                    self._iv_data[reqId] = {}
+                self._iv_data[reqId]["iv"] = value
                 ev = self._iv_events.get(reqId)
             if ev:
                 ev.set()
@@ -132,16 +146,22 @@ class IBApp(EWrapper, EClient):
     def tickOptionComputation(self, reqId, tickType, tickAttrib,
                               impliedVol, delta, optPrice, pvDividend,
                               gamma, vega, theta, undPrice):
-        iv_str = f"{impliedVol:.6f}" if impliedVol is not None else "None"
-        print(f"  [tick] reqId={reqId} tickType={tickType} impliedVol={iv_str}"
-              f" undPrice={undPrice} registered={reqId in self._iv_events} already_got={reqId in self._iv_data}")
-        if impliedVol is not None and 0 < impliedVol < SENTINEL:
-            with self._iv_lock:
-                if reqId not in self._iv_data:
-                    self._iv_data[reqId] = impliedVol
+        with self._iv_lock:
+            if reqId not in self._iv_data:
+                self._iv_data[reqId] = {}
+
+            updated = False
+            if impliedVol is not None and 0 < impliedVol < SENTINEL:
+                self._iv_data[reqId]["iv"] = impliedVol
+                updated = True
+            if undPrice is not None and 0 < undPrice < SENTINEL:
+                self._iv_data[reqId]["undPrice"] = undPrice
+                updated = True
+
+            if updated:
                 ev = self._iv_events.get(reqId)
-            if ev:
-                ev.set()
+                if ev:
+                    ev.set()
 
 
 # ──────────────────────────────────────────────────────────
@@ -291,30 +311,40 @@ class IBKRConnection:
             deadline = time.monotonic() + data_wait
             first_tick_received = any_event.is_set()  # already got one above
             for req, (key, ev) in req_map.items():
-                if ev.is_set():
-                    continue
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                fired = ev.wait(timeout=remaining)
-                if fired and not first_tick_received:
-                    first_tick_received = True
-                    new_deadline = time.monotonic() + 5
-                    if new_deadline > deadline:
-                        deadline = new_deadline
-                        print(f"  [IV] first tick — extending deadline +5s")
+                while True:
+                    with app._iv_lock:
+                        has_iv = "iv" in app._iv_data.get(req, {})
+                    if has_iv:
+                        if not first_tick_received:
+                            first_tick_received = True
+                            new_deadline = time.monotonic() + 5
+                            if new_deadline > deadline:
+                                deadline = new_deadline
+                                print(
+                                    f"  [IV] first tick — extending deadline +5s")
+                        break
+
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    ev.wait(timeout=remaining)
+                    ev.clear()
 
             # Log and cancel
             for req, (key, ev) in req_map.items():
                 print(
-                    f"  [wait] reqId={req} fired={ev.is_set()} iv={app._iv_data.get(req)}")
+                    f"  [wait] reqId={req} fired={ev.is_set()} data={app._iv_data.get(req)}")
             cancel_all()
             time.sleep(0.1)
 
         # Collect results
         results = {}
+        und_price = None
         for req, (key, ev) in req_map.items():
-            iv_raw = app._iv_data.get(req)
+            data = app._iv_data.get(req, {})
+            iv_raw = data.get("iv")
+            if "undPrice" in data and und_price is None:
+                und_price = data["undPrice"]
             iv_pct = round(iv_raw * 100, 2) if iv_raw is not None else None
             results[key] = iv_pct
             sym, exp, strike, right = key
@@ -323,12 +353,44 @@ class IBKRConnection:
             else:
                 print(f"  [IV] {sym} {right} {strike} {exp}: not available")
 
-        return results
+        return results, und_price
 
+    def fetch_stk_price(self, symbol, sec_type="STK", exchange="SMART", currency="USD", timeout=5):
+        """Fetches the actual underlying price (Last/Close) directly."""
+        app = self.ensure_connected()
+        req = 6000
+        ev = threading.Event()
+
+        c = Contract()
+        c.symbol = symbol
+        c.secType = sec_type
+        c.exchange = exchange
+        c.currency = currency
+
+        with app._request_lock:
+            app.reqMarketDataType(2)
+            with app._price_lock:
+                app._price_data.pop(req, None)
+                app._price_events[req] = ev
+
+            app.reqMktData(req, c, "", False, False, [])
+
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                ev.wait(timeout=deadline - time.monotonic())
+                ev.clear()
+                with app._price_lock:
+                    if req in app._price_data:
+                        break
+
+            app.cancelMktData(req)
+            with app._price_lock:
+                return app._price_data.get(req)
 
 # ──────────────────────────────────────────────────────────
 # Classify portfolio items
 # ──────────────────────────────────────────────────────────
+
 
 def classify_items(items):
     options_out = []
@@ -363,6 +425,7 @@ def classify_items(items):
                 "strike":   c.strike,
                 "premium":  premium_per_share,
                 "avgCost":  avg_cost,
+                "marketPrice": item.get("marketPrice"),
                 "mult":     mult,
                 "iv":       None,
                 "expiry":   expiry_str,
@@ -382,6 +445,7 @@ def classify_items(items):
                 "pos":      pos,
                 "entry":    avg_cost,
                 "avgCost":  avg_cost,
+                "marketPrice": item.get("marketPrice"),
                 "mult":     mult,
                 "currency": c.currency,
                 "exchange": c.exchange,
@@ -457,11 +521,18 @@ def make_app(tws_host, tws_port):
 
         print(f"[IV] Fetching IV for {len(contracts)} {symbol} option(s)…")
         try:
-            raw = ibkr.fetch_iv(contracts)
+            raw, und_price = ibkr.fetch_iv(contracts)
         except (ConnectionError, TimeoutError) as e:
             return jsonify({"error": str(e)}), 503
         except Exception as e:
             return jsonify({"error": f"IV fetch error: {e}"}), 500
+
+        # Attempt to get exact underlying price instead of the option model midpoint
+        clean_price = ibkr.fetch_stk_price(symbol, "STK", timeout=2)
+        if clean_price is None:
+            clean_price = ibkr.fetch_stk_price(symbol, "IND", timeout=2)
+
+        final_price = clean_price if clean_price is not None else und_price
 
         iv_out = {
             f"{exp}|{strike}|{right}": pct
@@ -470,8 +541,32 @@ def make_app(tws_host, tws_port):
         return jsonify({
             "symbol":    symbol,
             "iv":        iv_out,
+            "underlyingPrice": final_price,
             "fetchedAt": datetime.now(timezone.utc).isoformat(),
         })
+
+    @flask_app.route("/price")
+    def price():
+        symbol = flask_request.args.get("symbol", "").upper()
+        if not symbol:
+            return jsonify({"error": "symbol param required"}), 400
+
+        # Fetch clean price
+        try:
+            p = ibkr.fetch_stk_price(symbol, "STK", timeout=3)
+            if p is None:
+                p = ibkr.fetch_stk_price(symbol, "IND", timeout=3)
+            if p is not None:
+                return jsonify({"symbol": symbol, "price": p})
+
+            # Fallback: Try to get from underlying cache if we hold the stock
+            unds = [u for u in _cache["underlyings"] if u["symbol"] == symbol]
+            if unds and unds[0].get("marketPrice"):
+                return jsonify({"symbol": symbol, "price": unds[0]["marketPrice"]})
+
+            return jsonify({"error": "Price not available"}), 404
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     return flask_app
 
@@ -503,6 +598,7 @@ if __name__ == "__main__":
     /portfolio   — all positions (fast, no IV)
     /iv?symbol=X — live IV for all options of ticker X
                    (parallel subscriptions, 15 s shared deadline)
+    /price?symbol=X — live underlying Last/Close price for ticker X
 
   One persistent TWS connection is kept alive.
   Press Ctrl+C to stop.
