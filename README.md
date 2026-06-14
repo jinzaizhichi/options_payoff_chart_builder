@@ -52,6 +52,10 @@ Simply open the `options_payoff_ibkr.html` file in any modern web browser.
 - Interactive crosshair showing precise payoff expectations on both the expiration curve and the time-adjusted Black-Scholes curve.
 - Export/Import portfolio layouts to JSON.
 
+### 💡 Pro Tip: Shifting the P&L Curve
+
+If you want to account for previously collected premiums (e.g., from closed or rolled legs), you can shift the entire payoff curve up or down. To do this, manually add two opposite options that cancel each other out (e.g., +1 Call and -1 Call at the exact same strike and expiry). Set the premium of one to `0`, and the other to the net premium amount you want to adjust by. This shifts your net profit/loss baseline without altering the underlying shape of the options curve.
+
 ## Disclaimer
 
 This project is provided as-is. No ongoing support, maintenance, or future updates are planned.
