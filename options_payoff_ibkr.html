@@ -136,7 +136,7 @@ body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color
 .src-badge.manual{border-color:#3a3a3a;color:#555;background:transparent}
 
 /* col widths options */
-.opt-col-chk{width:22px}.opt-col-src{width:42px}.opt-col-type{width:58px}.opt-col-pos{width:48px}
+.opt-col-chk{width:22px}.opt-col-src{width:42px}.opt-col-sym{width:72px}.opt-col-type{width:58px}.opt-col-pos{width:48px}
 .opt-col-strike{width:80px}.opt-col-prem{width:72px}.opt-col-mult{width:48px}.opt-col-iv{width:54px}
 .opt-col-exp{width:106px}.opt-col-del{width:22px}
 /* col widths underlying */
@@ -291,6 +291,7 @@ body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color
       <thead><tr>
         <th class="opt-col-chk"></th>
         <th class="opt-col-src">src</th>
+        <th class="opt-col-sym">ticker</th>
         <th class="opt-col-type">type</th>
         <th class="opt-col-pos">pos</th>
         <th class="opt-col-strike">strike</th>
@@ -317,7 +318,7 @@ body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color
       <thead><tr>
         <th class="und-col-chk"></th>
         <th class="und-col-src">src</th>
-        <th class="und-col-sym">symbol</th>
+        <th class="und-col-sym">ticker</th>
         <th class="und-col-pos">pos</th>
         <th class="und-col-entry">entry price</th>
         <th class="und-col-mult">mult</th>
@@ -908,6 +909,7 @@ function renderOptions(){
     <tr class="leg-row${o.enabled?'':' leg-disabled'}" data-id="${o.id}">
       <td class="opt-col-chk td-check"><input type="checkbox" ${o.enabled?'checked':''} onchange="toggleOption(${o.id})"></td>
       <td class="opt-col-src td-src">${srcBadge(o.source)}</td>
+      <td class="opt-col-sym"><input type="text" value="${o.symbol||''}" style="font-family:inherit;font-size:12px;background:#0d0d0d;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:4px 5px;width:100%;height:30px;text-transform:uppercase" oninput="updateOption(${o.id},'symbol',this.value)"></td>
       <td class="opt-col-type"><select onchange="updateOption(${o.id},'type',this.value)">
         <option value="call" ${o.type==='call'?'selected':''}>call</option>
         <option value="put" ${o.type==='put'?'selected':''}>put</option>
@@ -927,7 +929,7 @@ function renderUnderlyings(){
     <tr class="leg-row${u.enabled?'':' leg-disabled'}" data-id="${u.id}">
       <td class="und-col-chk td-check"><input type="checkbox" ${u.enabled?'checked':''} onchange="toggleUnderlying(${u.id})"></td>
       <td class="und-col-src td-src">${srcBadge(u.source)}</td>
-      <td class="und-col-sym"><input type="text" value="${u.symbol||''}" style="font-family:inherit;font-size:12px;background:#0d0d0d;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:4px 5px;width:100%;height:30px" oninput="updateUnderlying(${u.id},'symbol',this.value)"></td>
+      <td class="und-col-sym"><input type="text" value="${u.symbol||''}" style="font-family:inherit;font-size:12px;background:#0d0d0d;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:4px 5px;width:100%;height:30px;text-transform:uppercase" oninput="updateUnderlying(${u.id},'symbol',this.value)"></td>
       <td class="und-col-pos">${ni('pos',u.id,u.pos,'updateUnderlying')}</td>
       <td class="und-col-entry">${ni('entry',u.id,u.entry,'updateUnderlying')}</td>
       <td class="und-col-mult">${ni('mult',u.id,u.mult,'updateUnderlying')}</td>
