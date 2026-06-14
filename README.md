@@ -51,6 +51,7 @@ Simply open the `options_payoff_ibkr.html` file in any modern web browser.
 - Gracefully attempts to pull Implied Volatility even when the market is closed (frozen data).
 - Interactive crosshair showing precise payoff expectations on both the expiration curve and the time-adjusted Black-Scholes curve.
 - Export/Import portfolio layouts to JSON.
+- Manually add custom option legs and underlying positions to test hypothetical trades.
 
 ### 💡 Pro Tip: Shifting the P&L Curve
 
