@@ -52,6 +52,9 @@ body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color
 .ticker-btn{font-family:inherit;font-size:12px;padding:4px 10px;background:transparent;border:.5px solid #444;border-radius:4px;color:#a8a7a0;cursor:pointer;transition:all .15s}
 .ticker-btn:hover{border-color:#888;color:#d4d4d0}
 .ticker-btn.active{border-color:#d4a020;color:#d4a020;background:#1e1900}
+.ticker-btn.ibkr{border-color:#2a5a4a;background:#0a1711}
+.ticker-btn.ibkr:hover{border-color:#1d9e75;color:#d4d4d0}
+.ticker-btn.ibkr.active{border-color:#1d9e75;color:#1d9e75;background:#0d2e22}
 .ticker-btn.del{color:#555;border-color:#333;font-size:11px;padding:4px 6px}
 .ticker-btn.del:hover{color:#e24b4a;border-color:#8b2020}
 .ticker-add{display:flex;gap:4px;align-items:center;margin-left:4px}
@@ -207,7 +210,7 @@ body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color
   </div>
 
   <!-- ── TICKER SELECTOR ── -->
-  <div id="tickerBarWrap" style="display:none">
+  <div id="tickerBarWrap">
     <div class="ticker-bar" id="tickerBar">
       <span style="font-size:11px;color:#666;margin-right:2px">filter:</span>
       <!-- ticker buttons injected here -->
@@ -427,12 +430,11 @@ async function refreshPortfolio(){
     const j=await res.json();
     ibkrPortfolio=j;
     // collect tickers
-    const set=new Set();
+    const set=new Set(allTickers);
     (j.options||[]).forEach(o=>set.add(o.symbol));
     (j.underlyings||[]).forEach(u=>set.add(u.symbol));
     allTickers=[...set].sort();
     renderTickerBar();
-    document.getElementById('tickerBarWrap').style.display='block';
     showToast(`Portfolio loaded — ${(j.options||[]).length} options, ${(j.underlyings||[]).length} positions — click IV on a ticker to fetch implied vol`,'ok');
   } catch(e){
     showToast('Portfolio fetch failed: '+e.message,'err',4000);
@@ -452,10 +454,11 @@ function renderTickerBar(){
   // insert before addRow
   allTickers.forEach(t=>{
     const isActive=activeTickers.includes(t);
+    const isIbkr=(ibkrPortfolio.options||[]).some(o=>o.symbol===t) || (ibkrPortfolio.underlyings||[]).some(u=>u.symbol===t);
     const wrap=document.createElement('span');
     wrap.style.display='inline-flex';wrap.style.gap='0';
     const btn=document.createElement('button');
-    btn.className='ticker-btn'+(isActive?' active':'');
+    btn.className='ticker-btn'+(isIbkr?' ibkr':'')+(isActive?' active':'');
     btn.textContent=t;
     btn.onclick=()=>toggleTicker(t);
     const iv=document.createElement('button');
@@ -490,7 +493,14 @@ async function fetchIVForTicker(t){
   if(btn){ btn.textContent='…'; btn.className='iv-btn loading'; btn.disabled=true; }
   const url=document.getElementById('proxyUrl').value.trim().replace(/\/$/,'');
   try{
-    const res=await fetch(url+'/iv?symbol='+encodeURIComponent(t),{signal:AbortSignal.timeout(30000)});
+        const tOpts = options.filter(o=>o.symbol===t);
+        let reqInit = { signal:AbortSignal.timeout(30000) };
+        if(tOpts.length > 0){
+          reqInit.method = 'POST';
+          reqInit.headers = {'Content-Type': 'application/json'};
+          reqInit.body = JSON.stringify({options: tOpts});
+        }
+        const res=await fetch(url+'/iv?symbol='+encodeURIComponent(t), reqInit);
     const j=await res.json();
     if(!res.ok) throw new Error(j.error||'HTTP '+res.status);
     const ivMap=j.iv||{};
@@ -531,7 +541,11 @@ function removeTicker(t){
   ibkrPortfolio.options=ibkrPortfolio.options.filter(o=>o.symbol!==t);
   ibkrPortfolio.underlyings=ibkrPortfolio.underlyings.filter(u=>u.symbol!==t);
   delete tickerPrices[t];
+  options.forEach(o => { if(o.symbol === t) o.symbol = ''; });
+  underlyings.forEach(u => { if(u.symbol === t) u.symbol = ''; });
   renderTickerBar();
+  renderOptions();
+  renderUnderlyings();
   if(chart) chart.update('none');
 }
 
@@ -543,6 +557,9 @@ function addTickerBtn(){
   if(!activeTickers.includes(t)) activeTickers.push(t);
   inp.value='';
   renderTickerBar();
+  fetchTickerPrice(t);
+  renderOptions();
+  renderUnderlyings();
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -949,7 +966,7 @@ function updateMetrics(){
 ═══════════════════════════════════════════════════════ */
 function clearAll(){ options=[]; underlyings=[]; tickerPrices={}; renderOptions(); renderUnderlyings(); rebuildSlider(); updateChart(); }
 function addOption(type='put',strike=100,premium=1,mult=100,pos=1,iv=20,expiry='',enabled=true){
-  options.push({id:++optId,type,strike,premium,mult,pos,iv,expiry,enabled,source:'manual'});
+  options.push({id:++optId,type,strike,premium,mult,pos,iv,expiry,enabled,source:'manual',symbol:''});
   renderOptions(); rebuildSlider(); updateChart();
 }
 function addUnderlying(entry=100,mult=1,pos=1,enabled=true){
@@ -960,13 +977,36 @@ function removeOption(id){ options=options.filter(o=>o.id!==id); renderOptions()
 function removeUnderlying(id){ underlyings=underlyings.filter(u=>u.id!==id); renderUnderlyings(); updateChart(); }
 function toggleOption(id){ const o=options.find(o=>o.id===id); if(!o) return; o.enabled=!o.enabled; const r=document.querySelector(`#optTbody tr[data-id="${id}"]`); if(r) r.className='leg-row'+(o.enabled?'':' leg-disabled'); rebuildSlider(); updateChart(); }
 function toggleUnderlying(id){ const u=underlyings.find(u=>u.id===id); if(!u) return; u.enabled=!u.enabled; const r=document.querySelector(`#undTbody tr[data-id="${id}"]`); if(r) r.className='leg-row'+(u.enabled?'':' leg-disabled'); updateChart(); }
-function updateOption(id,field,val){ const o=options.find(o=>o.id===id); if(!o) return; if(field==='type'||field==='expiry') o[field]=val; else o[field]=parseFloat(val)||0; if(field==='expiry') rebuildSlider(); if(field==='iv') renderOptions(); updateChart(); }
-function updateUnderlying(id,field,val){ const u=underlyings.find(u=>u.id===id); if(!u) return; if(field==='symbol') u[field]=val; else u[field]=parseFloat(val)||0; updateChart(); }
+
+function updateOption(id,field,val){ 
+  const o=options.find(o=>o.id===id); if(!o) return; 
+  if(field==='type'||field==='expiry'||field==='symbol'){
+    if(field==='symbol') val = val.trim().toUpperCase();
+    o[field]=val; 
+  } else o[field]=parseFloat(val)||0; 
+  if(field==='expiry') rebuildSlider(); if(field==='iv') renderOptions(); updateChart(); 
+}
+function updateUnderlying(id,field,val){ 
+  const u=underlyings.find(u=>u.id===id); if(!u) return; 
+  if(field==='symbol') u[field]=val.trim().toUpperCase();
+  else u[field]=parseFloat(val)||0; 
+  updateChart(); 
+}
 function toggleAutoRange(){ const a=document.getElementById('rangeAuto').checked; document.getElementById('rangeMin').disabled=a; document.getElementById('rangeMax').disabled=a; updateChart(); }
 
 function ni(field,id,val,fn){ return `<input type="number" value="${val}" step="any" oninput="${fn}(${id},'${field}',this.value)">`; }
 function di(field,id,val,fn){ return `<input type="date" value="${val||''}" style="color-scheme:dark" onchange="${fn}(${id},'${field}',this.value)">`; }
-function srcBadge(src){ return src==='ibkr'?'<span class="src-badge">ibkr</span>':'<span class="src-badge manual">—</span>'; }
+function srcBadge(src){ return src==='ibkr'?'<span class="src-badge">ibkr</span>':'<span class="src-badge manual">manual</span>'; }
+function symSel(id, val, src, fn){
+  if(src==='ibkr'){
+    return `<input type="text" value="${val||''}" readonly style="font-family:inherit;font-size:12px;background:#1a1a1a;border:.5px solid #333;border-radius:4px;color:#777;padding:4px 5px;width:100%;height:30px;cursor:not-allowed">`;
+  }
+  const opts = allTickers.map(t=>`<option value="${t}" ${t===val?'selected':''}>${t}</option>`).join('');
+  return `<select onchange="${fn}(${id},'symbol',this.value)">
+    <option value="" ${!val?'selected':''}>--</option>
+    ${opts}
+  </select>`;
+}
 
 function renderOptions(){
   document.getElementById('optEmpty').style.display=options.length?'none':'block';
@@ -974,7 +1014,7 @@ function renderOptions(){
     <tr class="leg-row${o.enabled?'':' leg-disabled'}" data-id="${o.id}">
       <td class="opt-col-chk td-check"><input type="checkbox" ${o.enabled?'checked':''} onchange="toggleOption(${o.id})"></td>
       <td class="opt-col-src td-src">${srcBadge(o.source)}</td>
-      <td class="opt-col-sym"><input type="text" value="${o.symbol||''}" style="font-family:inherit;font-size:12px;background:#0d0d0d;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:4px 5px;width:100%;height:30px;text-transform:uppercase" oninput="updateOption(${o.id},'symbol',this.value)"></td>
+      <td class="opt-col-sym">${symSel(o.id,o.symbol,o.source,'updateOption')}</td>
       <td class="opt-col-type"><select onchange="updateOption(${o.id},'type',this.value)">
         <option value="call" ${o.type==='call'?'selected':''}>call</option>
         <option value="put" ${o.type==='put'?'selected':''}>put</option>
@@ -994,7 +1034,7 @@ function renderUnderlyings(){
     <tr class="leg-row${u.enabled?'':' leg-disabled'}" data-id="${u.id}">
       <td class="und-col-chk td-check"><input type="checkbox" ${u.enabled?'checked':''} onchange="toggleUnderlying(${u.id})"></td>
       <td class="und-col-src td-src">${srcBadge(u.source)}</td>
-      <td class="und-col-sym"><input type="text" value="${u.symbol||''}" style="font-family:inherit;font-size:12px;background:#0d0d0d;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:4px 5px;width:100%;height:30px;text-transform:uppercase" oninput="updateUnderlying(${u.id},'symbol',this.value)"></td>
+      <td class="und-col-sym">${symSel(u.id,u.symbol,u.source,'updateUnderlying')}</td>
       <td class="und-col-pos">${ni('pos',u.id,u.pos,'updateUnderlying')}</td>
       <td class="und-col-entry">${ni('entry',u.id,u.entry,'updateUnderlying')}</td>
       <td class="und-col-mult">${ni('mult',u.id,u.mult,'updateUnderlying')}</td>
@@ -1032,6 +1072,12 @@ function importData(e){
       if(d.rate) document.getElementById('rateInp').value=d.rate;
       options=(d.options||[]).map(o=>({...o,id:++optId,iv:o.iv||20,expiry:o.expiry||'',source:o.source||'manual'}));
       underlyings=(d.underlyings||[]).map(u=>({...u,id:++undId,source:u.source||'manual'}));
+      const tSet=new Set();
+      options.forEach(o=>o.symbol&&tSet.add(o.symbol));
+      underlyings.forEach(u=>u.symbol&&tSet.add(u.symbol));
+      allTickers=[...tSet].sort();
+      activeTickers=[...allTickers];
+      renderTickerBar();
       renderOptions(); renderUnderlyings(); rebuildSlider(); updateChart();
       showToast('Imported successfully','ok');
     } catch(err){ showToast('Import error: '+err,'err'); }

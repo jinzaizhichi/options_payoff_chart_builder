@@ -497,27 +497,39 @@ def make_app(tws_host, tws_port):
         except Exception as e:
             return jsonify({"error": f"Unexpected error: {e}"}), 500
 
-    @flask_app.route("/iv")
+    @flask_app.route("/iv", methods=["GET", "POST"])
     def iv():
         symbol = flask_request.args.get("symbol", "").upper()
         if not symbol:
             return jsonify({"error": "symbol param required"}), 400
 
-        opts = [o for o in _cache["options"] if o["symbol"] == symbol]
+        opts = []
+        if flask_request.method == "POST":
+            payload = flask_request.get_json(silent=True) or {}
+            opts = payload.get("options", [])
+
+        if not opts:
+            opts = [o for o in _cache["options"] if o["symbol"] == symbol]
+
         if not opts:
             return jsonify({
-                "error": f"No options for {symbol} in cache — call /portfolio first"
+                "error": f"No options found for {symbol}. Please add option legs manually or refresh portfolio first"
             }), 404
 
         contracts = [{
             "symbol":     o["symbol"],
-            "expiry":     o["expiry"].replace("-", ""),
-            "strike":     o["strike"],
-            "right":      "C" if o["type"] == "call" else "P",
-            "multiplier": o["mult"],
+            "expiry":     o.get("expiry", "").replace("-", ""),
+            "strike":     float(o.get("strike", 0)),
+            "right":      "C" if o.get("type", "call").lower() == "call" else "P",
+            "multiplier": str(o.get("mult", 100)),
             "exchange":   o.get("exchange") or "SMART",
             "currency":   o.get("currency") or "USD",
-        } for o in opts]
+        } for o in opts if o.get("expiry") and o.get("strike")]
+
+        if not contracts and opts:
+            return jsonify({"error": f"One or more {symbol} legs are missing an expiry or strike"}), 400
+        elif not contracts:
+            return jsonify({"error": f"No valid option expirations/strikes provided for {symbol}"}), 400
 
         print(f"[IV] Fetching IV for {len(contracts)} {symbol} option(s)…")
         try:
@@ -597,7 +609,7 @@ if __name__ == "__main__":
     /ping        — health check (also verifies TWS connection)
     /portfolio   — all positions (fast, no IV)
     /iv?symbol=X — live IV for all options of ticker X
-                   (parallel subscriptions, 15 s shared deadline)
+                   (accepts POST with custom options payload)
     /price?symbol=X — live underlying Last/Close price for ticker X
 
   One persistent TWS connection is kept alive.
