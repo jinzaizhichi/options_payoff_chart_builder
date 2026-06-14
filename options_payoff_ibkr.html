@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Payoff Builder — IBKR</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color:#d4d4d0}
+.root{max-width:98%;margin:0 auto;padding:1rem 0 2rem}
+
+/* ── header ── */
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:8px}
+.title{font-size:15px;font-weight:500;letter-spacing:.04em;color:#e8e8e4}
+.hdr-left{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.hdr-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tag{font-size:11px;padding:2px 8px;border-radius:4px;background:#252525;color:#a8a7a0;border:.5px solid #525250}
+.action-btn{font-family:inherit;font-size:12px;padding:5px 11px;border-radius:4px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:background .15s}
+.action-btn:disabled{opacity:.35;cursor:not-allowed}
+.btn-icon{font-size:13px;line-height:1}
+.ibkr-import-btn{background:#0d2e22;border:1px solid #1d9e75;color:#1d9e75;font-weight:500}
+.ibkr-import-btn:hover:not(:disabled){background:#123d2c}
+.file-btn{background:transparent;border:.5px solid #555;color:#b0b0a8}
+.file-btn:hover{background:#2a2a2a}
+.danger-btn{background:transparent;border:.5px solid #8b2020;color:#e24b4a}
+.danger-btn:hover{background:#2e1515}
+
+/* ── IBKR panel ── */
+.ibkr-panel{background:#111;border:.5px solid #3a3a3a;border-radius:6px;padding:10px 12px;margin-bottom:1rem}
+.ibkr-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.ibkr-title{font-size:11px;letter-spacing:.08em;color:#a8a7a0;text-transform:uppercase}
+.ibkr-status{display:flex;align-items:center;gap:6px;font-size:11px}
+.status-dot{width:7px;height:7px;border-radius:50%;background:#555;flex-shrink:0;transition:background .3s}
+.status-dot.connected{background:#1d9e75}
+.status-dot.error{background:#e24b4a}
+.status-dot.connecting{background:#e8a020;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.ibkr-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ibkr-inp{font-family:inherit;font-size:12px;background:#1a1a1a;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:3px 7px;height:28px}
+.ibkr-inp:focus{outline:none;border-color:#888}
+.ibkr-btn{font-family:inherit;font-size:12px;padding:3px 10px;background:transparent;border:.5px solid #666;border-radius:4px;color:#d4d4d0;cursor:pointer;height:28px}
+.ibkr-btn:hover{background:#2a2a2a}
+.ibkr-btn.primary{border-color:#1d9e75;color:#1d9e75}
+.ibkr-btn.primary:hover{background:#0d2e22}
+.ibkr-btn:disabled{opacity:.35;cursor:not-allowed}
+.ibkr-hint{font-size:10px;color:#555;margin-top:6px;line-height:1.5}
+.ibkr-hint a{color:#666;text-decoration:underline}
+.ibkr-hint code{background:#1e1e1e;padding:1px 4px;border-radius:3px;color:#a8a7a0}
+
+/* ── ticker selector ── */
+.ticker-bar{display:flex;align-items:center;gap:6px;margin-bottom:.75rem;flex-wrap:wrap}
+.ticker-btn{font-family:inherit;font-size:12px;padding:4px 10px;background:transparent;border:.5px solid #444;border-radius:4px;color:#a8a7a0;cursor:pointer;transition:all .15s}
+.ticker-btn:hover{border-color:#888;color:#d4d4d0}
+.ticker-btn.active{border-color:#d4a020;color:#d4a020;background:#1e1900}
+.ticker-btn.del{color:#555;border-color:#333;font-size:11px;padding:4px 6px}
+.ticker-btn.del:hover{color:#e24b4a;border-color:#8b2020}
+.ticker-add{display:flex;gap:4px;align-items:center;margin-left:4px}
+.ticker-inp-add{font-family:inherit;font-size:12px;background:#1a1a1a;border:.5px solid #444;border-radius:4px;color:#d4d4d0;padding:3px 7px;height:28px;width:80px;text-transform:uppercase}
+.ticker-inp-add:focus{outline:none;border-color:#888}
+.ticker-add-btn{font-family:inherit;font-size:12px;padding:3px 8px;background:transparent;border:.5px solid #666;border-radius:4px;color:#d4d4d0;cursor:pointer;height:28px}
+.iv-btn{font-family:inherit;font-size:10px;padding:2px 5px;background:transparent;border:.5px solid #2a5a8a;border-radius:3px;color:#5a9fd4;cursor:pointer;height:22px;white-space:nowrap}
+.iv-btn:hover{background:#0d1e2e}
+.iv-btn.loading{opacity:.5;cursor:wait}
+.iv-btn.done{border-color:#1d9e75;color:#1d9e75}
+.iv-btn.err{border-color:#8b2020;color:#e24b4a}
+.ticker-add-btn:hover{background:#2a2a2a}
+
+/* ── chart ── */
+.chart-wrap{position:relative;width:100%;height:340px;border:.5px solid #525250;border-radius:6px;overflow:hidden;margin-bottom:1.25rem;background:#111}
+.crosshair-overlay{position:absolute;inset:0;pointer-events:none}
+.crosshair-line-v{position:absolute;top:0;bottom:0;width:1px;background:rgba(220,220,210,.3);display:none}
+.crosshair-line-h{position:absolute;left:0;right:0;height:1px;background:rgba(220,220,210,.15);display:none}
+.crosshair-tooltip{position:absolute;background:rgba(10,10,10,.95);border:.5px solid #555;border-radius:4px;padding:6px 10px;font-size:12px;font-family:inherit;color:#e8e8e4;pointer-events:none;display:none;white-space:nowrap;z-index:10}
+.ct-price{color:#a8a7a0;font-size:11px;margin-bottom:4px}
+.ct-row{display:flex;align-items:center;gap:6px;margin-top:3px}
+.ct-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.ct-val{font-size:13px;font-weight:600}
+.ct-lbl{font-size:11px;color:#a8a7a0}
+
+/* ── metrics ── */
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:1rem}
+.metric{background:#111;border-radius:6px;padding:8px 10px;border:.5px solid #3a3a3a}
+.metric-label{font-size:10px;color:#a8a7a0;letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px}
+.metric-val{font-size:15px;font-weight:500}
+.metric-val.pos{color:#1d9e75}
+.metric-val.neg{color:#e24b4a}
+.metric-val.neu{color:#d4d4d0}
+
+/* ── controls ── */
+.ctrl-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.ctrl-row label{font-size:11px;color:#a8a7a0;white-space:nowrap}
+.ctrl-inp{font-family:inherit;font-size:13px;background:#111;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:4px 7px;height:30px}
+.ctrl-inp:focus{outline:none;border-color:#888}
+.ctrl-inp:disabled{opacity:.4;cursor:not-allowed}
+.range-inp{width:90px}
+.range-sep{font-size:11px;color:#a8a7a0}
+
+/* ── DTE section ── */
+.dte-section{background:#111;border:.5px solid #3a3a3a;border-radius:6px;padding:10px 12px;margin-bottom:1.25rem}
+.dte-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px}
+.dte-title{font-size:11px;letter-spacing:.08em;color:#a8a7a0;text-transform:uppercase}
+.dte-badges{display:flex;gap:6px;align-items:center}
+.dte-badge{font-size:11px;padding:2px 7px;border-radius:3px;background:#111;border:.5px solid #444;color:#d4d4d0;display:flex;align-items:center;gap:4px}
+.dte-row{display:flex;align-items:center;gap:10px}
+.dte-row label{font-size:11px;color:#a8a7a0;min-width:56px}
+.dte-slider{flex:1;accent-color:#888;cursor:pointer;height:4px}
+.dte-slider:disabled{opacity:.3;cursor:not-allowed}
+.dte-info{font-size:12px;font-weight:500;color:#d4d4d0;min-width:160px;text-align:right}
+
+/* ── leg tables ── */
+.section{margin-bottom:1.25rem}
+.section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px}
+.section-label{font-size:11px;letter-spacing:.08em;color:#a8a7a0;text-transform:uppercase}
+.section-hdr-right{display:flex;gap:6px;align-items:center}
+.add-btn{font-family:inherit;font-size:12px;padding:4px 10px;background:transparent;border:.5px solid #666;border-radius:4px;color:#d4d4d0;cursor:pointer}
+.add-btn:hover{background:#2a2a2a}
+
+
+.leg-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.leg-table th{font-size:10px;letter-spacing:.06em;color:#a8a7a0;text-transform:uppercase;text-align:left;padding:4px 6px;border-bottom:.5px solid #525250;font-weight:400;white-space:nowrap}
+.leg-table td{padding:4px 4px;vertical-align:middle}
+.leg-table tr.leg-row:hover td{background:#1e1e1e}
+.leg-table tr.leg-disabled td{opacity:.35}
+.leg-table tr.leg-disabled td.td-check{opacity:1}
+.leg-table tr.ibkr-imported td.td-src{color:#d4a020}
+.leg-table input[type=number],.leg-table select,.leg-table input[type=date]{
+  font-family:inherit;font-size:12px;background:#0d0d0d;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:4px 5px;width:100%;height:30px
+}
+.leg-table input[type=date]{color-scheme:dark;font-size:11px}
+.leg-table input[type=number]:focus,.leg-table select:focus,.leg-table input[type=date]:focus{outline:none;border-color:#888}
+.leg-table select option{background:#1a1a1a}
+.leg-table input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:#1d9e75;margin:0;display:block}
+.del-btn{background:transparent;border:none;color:#666;cursor:pointer;font-size:17px;padding:0 4px;line-height:1}
+.del-btn:hover{color:#e24b4a}
+.src-badge{font-size:9px;padding:1px 4px;border-radius:3px;border:.5px solid #5a4500;color:#b88a00;background:#1a1200;white-space:nowrap}
+.src-badge.manual{border-color:#3a3a3a;color:#555;background:transparent}
+
+/* col widths options */
+.opt-col-chk{width:22px}.opt-col-src{width:42px}.opt-col-type{width:58px}.opt-col-pos{width:48px}
+.opt-col-strike{width:80px}.opt-col-prem{width:72px}.opt-col-mult{width:48px}.opt-col-iv{width:54px}
+.opt-col-exp{width:106px}.opt-col-del{width:22px}
+/* col widths underlying */
+.und-col-chk{width:22px}.und-col-src{width:42px}.und-col-sym{width:72px}.und-col-pos{width:56px}
+.und-col-entry{width:100px}.und-col-mult{width:72px}.und-col-del{width:22px}
+
+.empty-msg{font-size:12px;color:#555;padding:10px 6px}
+
+/* ── loading overlay ── */
+.loading-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100;display:none}
+.loading-box{background:#111;border:.5px solid #444;border-radius:8px;padding:16px 24px;font-size:13px;color:#d4d4d0}
+
+/* ── toast ── */
+.toast{position:fixed;bottom:20px;right:20px;background:#111;border:.5px solid #444;border-radius:6px;padding:8px 14px;font-size:12px;color:#d4d4d0;z-index:200;opacity:0;transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
+.toast.ok{border-color:#1d9e75;color:#1d9e75}
+.toast.err{border-color:#e24b4a;color:#e24b4a}
+</style>
+</head>
+<body>
+<div class="root">
+
+  <!-- ── HEADER ── -->
+  <div class="header">
+    <div class="hdr-left">
+      <span class="title">payoff builder</span>
+      <span class="tag">ibkr tws</span>
+      <span class="tag">options + underlying</span>
+    </div>
+    <div class="hdr-right">
+      <input type="file" id="fileImport" style="display:none" accept=".json" onchange="importData(event)">
+      <button class="action-btn ibkr-import-btn" id="importAllBtn" onclick="importTickerPositions('all')" disabled title="Import all positions for selected tickers from IBKR">
+        <span class="btn-icon">⬇</span> import from ibkr
+      </button>
+      <button class="action-btn file-btn" onclick="document.getElementById('fileImport').click()" title="Load a previously exported .json file">
+        <span class="btn-icon">📂</span> open file
+      </button>
+      <button class="action-btn file-btn" onclick="exportData()" title="Save current positions to .json">
+        <span class="btn-icon">💾</span> save file
+      </button>
+      <button class="action-btn danger-btn" onclick="clearAll()">✕ clear all</button>
+    </div>
+  </div>
+
+  <!-- ── IBKR CONNECTION PANEL ── -->
+  <div class="ibkr-panel">
+    <div class="ibkr-header">
+      <span class="ibkr-title">ibkr tws connection</span>
+      <div class="ibkr-status">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText" style="color:#666">not connected</span>
+      </div>
+    </div>
+    <div class="ibkr-row">
+      <label style="font-size:11px;color:#a8a7a0">proxy</label>
+      <input class="ibkr-inp" id="proxyUrl" value="http://localhost:5001" style="width:180px" placeholder="http://localhost:5001">
+      <button class="ibkr-btn primary" id="connectBtn" onclick="connectIBKR()">connect</button>
+      <button class="ibkr-btn" id="disconnectBtn" onclick="disconnectIBKR()" disabled>disconnect</button>
+      <button class="ibkr-btn" id="refreshBtn" onclick="refreshPortfolio()" disabled>↻ refresh portfolio</button>
+
+    </div>
+    <div class="ibkr-hint">
+      Requires the lightweight proxy running locally alongside TWS or IB Gateway.
+      Save <strong>ibkr_proxy.py</strong> (included in the export zip or below) and run:
+      <code>python ibkr_proxy.py</code> — then click connect.<br>
+      <span style="color:#444">Proxy listens on port 5001 and bridges to TWS paper on port 7497. (Optional flags: use <code>--tws-port 7496</code> for live TWS, or <code>--tws-port 4001</code>/<code>4002</code> for Gateway).</span>
+    </div>
+  </div>
+
+  <!-- ── TICKER SELECTOR ── -->
+  <div id="tickerBarWrap" style="display:none">
+    <div class="ticker-bar" id="tickerBar">
+      <span style="font-size:11px;color:#666;margin-right:2px">filter:</span>
+      <!-- ticker buttons injected here -->
+      <div class="ticker-add">
+        <input class="ticker-inp-add" id="tickerAddInp" placeholder="AAPL" maxlength="12" onkeydown="if(event.key==='Enter')addTickerBtn()">
+        <button class="ticker-add-btn" onclick="addTickerBtn()">+ ticker</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PRICE RANGE ── -->
+  <div class="ctrl-row">
+    <label>price range</label>
+    <input type="checkbox" id="rangeAuto" checked onchange="toggleAutoRange()">
+    <label for="rangeAuto" style="min-width:auto;cursor:pointer">auto</label>
+    <input class="ctrl-inp range-inp" type="number" id="rangeMin" value="1" step="any" oninput="updateChart()" disabled>
+    <span class="range-sep">–</span>
+    <input class="ctrl-inp range-inp" type="number" id="rangeMax" value="1000" step="any" oninput="updateChart()" disabled>
+  </div>
+
+  <!-- ── DTE SECTION ── -->
+  <div class="dte-section">
+    <div class="dte-header">
+      <span class="dte-title">time value (black-scholes)</span>
+      <div class="dte-badges">
+        <span class="dte-badge"><span style="display:inline-block;width:16px;height:2px;background:#999;vertical-align:middle"></span> expiry P&amp;L</span>
+        <span class="dte-badge"><span style="display:inline-block;width:16px;height:0;border-top:2px dashed #999;vertical-align:middle"></span> BS curve</span>
+      </div>
+    </div>
+    <div class="ctrl-row" style="margin-bottom:10px">
+      <label>r %</label>
+      <input class="ctrl-inp" style="width:60px" type="number" id="rateInp" value="5" step="0.1" min="0" max="30" oninput="updateChart()">
+      <span style="font-size:11px;color:#555;margin-left:6px">set expiry per leg to enable BS curve</span>
+    </div>
+    <div class="dte-row">
+      <label>time</label>
+      <input type="range" class="dte-slider" id="dteSlider" min="0" max="1000" value="1000" step="1" oninput="onDteScrub()" disabled>
+      <span class="dte-info" id="dteInfo">— add expiry to legs</span>
+    </div>
+  </div>
+
+  <!-- ── CHART ── -->
+  <div class="chart-wrap" id="chartWrap">
+    <canvas id="payoffChart"></canvas>
+    <div class="crosshair-overlay">
+      <div class="crosshair-line-v" id="xhairV"></div>
+      <div class="crosshair-line-h" id="xhairH"></div>
+      <div class="crosshair-tooltip" id="xhairTip">
+        <div class="ct-price" id="ctPrice"></div>
+        <div class="ct-row" id="ctRowExp">
+          <span class="ct-dot" id="ctDotExp"></span>
+          <span class="ct-val" id="ctExp"></span>
+          <span class="ct-lbl">expiry</span>
+        </div>
+        <div class="ct-row" id="ctRowBS" style="display:none">
+          <span class="ct-dot" id="ctDotBS"></span>
+          <span class="ct-val" id="ctBS"></span>
+          <span class="ct-lbl" id="ctBSlbl">BS</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── METRICS ── -->
+  <div class="metrics">
+    <div class="metric"><div class="metric-label">max profit</div><div class="metric-val neu" id="mMaxProfit">—</div></div>
+    <div class="metric"><div class="metric-label">max loss</div><div class="metric-val neu" id="mMaxLoss">—</div></div>
+    <div class="metric"><div class="metric-label">breakeven(s)</div><div class="metric-val neu" id="mBreakeven" style="font-size:12px">—</div></div>
+    <div class="metric"><div class="metric-label">net premium</div><div class="metric-val neu" id="mNetPrem">—</div></div>
+  </div>
+
+  <!-- ── OPTIONS TABLE ── -->
+  <div class="section">
+    <div class="section-hdr">
+      <span class="section-label">options</span>
+      <div class="section-hdr-right">
+        <button class="add-btn" onclick="addOption()">+ add option</button>
+      </div>
+    </div>
+    <table class="leg-table">
+      <thead><tr>
+        <th class="opt-col-chk"></th>
+        <th class="opt-col-src">src</th>
+        <th class="opt-col-type">type</th>
+        <th class="opt-col-pos">pos</th>
+        <th class="opt-col-strike">strike</th>
+        <th class="opt-col-prem">premium</th>
+        <th class="opt-col-mult">mult</th>
+        <th class="opt-col-iv">IV %</th>
+        <th class="opt-col-exp">expiry</th>
+        <th class="opt-col-del"></th>
+      </tr></thead>
+      <tbody id="optTbody"></tbody>
+    </table>
+    <div id="optEmpty" class="empty-msg">no options — use "import from ibkr" above or add manually</div>
+  </div>
+
+  <!-- ── UNDERLYING TABLE ── -->
+  <div class="section">
+    <div class="section-hdr">
+      <span class="section-label">underlying</span>
+      <div class="section-hdr-right">
+        <button class="add-btn" onclick="addUnderlying()">+ add position</button>
+      </div>
+    </div>
+    <table class="leg-table">
+      <thead><tr>
+        <th class="und-col-chk"></th>
+        <th class="und-col-src">src</th>
+        <th class="und-col-sym">symbol</th>
+        <th class="und-col-pos">pos</th>
+        <th class="und-col-entry">entry price</th>
+        <th class="und-col-mult">mult</th>
+        <th class="und-col-del"></th>
+      </tr></thead>
+      <tbody id="undTbody"></tbody>
+    </table>
+    <div id="undEmpty" class="empty-msg">no underlying — use "import from ibkr" above or add manually</div>
+  </div>
+</div>
+
+<!-- ── LOADING OVERLAY ── -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-box" id="loadingMsg">loading…</div>
+</div>
+
+<!-- ── TOAST ── -->
+<div class="toast" id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════════════════ */
+let options=[], underlyings=[];
+let optId=0, undId=0, chart;
+let currentPrices=[], currentPayoffs=[], currentBSPayoffs=[];
+let viewDateMs=null, sliderMinMs=null, sliderMaxMs=null;
+
+// IBKR state
+let ibkrConnected=false;
+let ibkrPortfolio={options:[], underlyings:[]};   // raw from proxy
+let activeTickers=[];       // currently selected ticker filter
+let allTickers=[];          // tickers discovered from portfolio
+
+/* ═══════════════════════════════════════════════════════
+   TOAST / LOADING
+═══════════════════════════════════════════════════════ */
+function showToast(msg,type='',ms=2800){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='toast show'+(type?' '+type:'');
+  clearTimeout(t._timer);
+  t._timer=setTimeout(()=>t.className='toast',ms);
+}
+function setLoading(msg){
+  const o=document.getElementById('loadingOverlay');
+  if(msg){ document.getElementById('loadingMsg').textContent=msg; o.style.display='flex'; }
+  else o.style.display='none';
+}
+
+/* ═══════════════════════════════════════════════════════
+   IBKR CONNECTION
+═══════════════════════════════════════════════════════ */
+function setConnectionState(state, msg){
+  const dot=document.getElementById('statusDot');
+  const txt=document.getElementById('statusText');
+  const connectBtn=document.getElementById('connectBtn');
+  const disconnectBtn=document.getElementById('disconnectBtn');
+  const refreshBtn=document.getElementById('refreshBtn');
+  const importAllBtn=document.getElementById('importAllBtn');
+
+  dot.className='status-dot '+state;
+  txt.textContent=msg;
+  ibkrConnected=(state==='connected');
+  connectBtn.disabled=ibkrConnected;
+  disconnectBtn.disabled=!ibkrConnected;
+  refreshBtn.disabled=!ibkrConnected;
+  importAllBtn.disabled=!ibkrConnected;
+  document.querySelectorAll('.iv-btn').forEach(b=>b.disabled=!ibkrConnected);
+}
+
+async function connectIBKR(){
+  const url=document.getElementById('proxyUrl').value.trim().replace(/\/$/,'');
+  setConnectionState('connecting','connecting…');
+  try{
+    const res=await fetch(url+'/ping',{signal:AbortSignal.timeout(4000)});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const j=await res.json();
+    if(j.status!=='ok') throw new Error(j.error||'proxy error');
+    setConnectionState('connected','connected — '+url);
+    showToast('Connected to IBKR proxy','ok');
+    await refreshPortfolio();
+  } catch(e){
+    setConnectionState('error','connection failed: '+e.message);
+    showToast('Could not connect: '+e.message,'err',4000);
+  }
+}
+
+function disconnectIBKR(){
+  ibkrPortfolio={options:[],underlyings:[]};
+  allTickers=[];
+  activeTickers=[];
+  setConnectionState('','not connected');
+  renderTickerBar();
+  showToast('Disconnected');
+}
+
+async function refreshPortfolio(){
+  const url=document.getElementById('proxyUrl').value.trim().replace(/\/$/,'');
+  setLoading('Fetching portfolio from IBKR…');
+  try{
+    const res=await fetch(url+'/portfolio',{signal:AbortSignal.timeout(10000)});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const j=await res.json();
+    ibkrPortfolio=j;
+    // collect tickers
+    const set=new Set();
+    (j.options||[]).forEach(o=>set.add(o.symbol));
+    (j.underlyings||[]).forEach(u=>set.add(u.symbol));
+    allTickers=[...set].sort();
+    renderTickerBar();
+    document.getElementById('tickerBarWrap').style.display='block';
+    showToast(`Portfolio loaded — ${(j.options||[]).length} options, ${(j.underlyings||[]).length} positions — click IV on a ticker to fetch implied vol`,'ok');
+  } catch(e){
+    showToast('Portfolio fetch failed: '+e.message,'err',4000);
+    setConnectionState('error','portfolio fetch failed');
+  } finally{ setLoading(null); }
+}
+
+/* ═══════════════════════════════════════════════════════
+   TICKER BAR
+═══════════════════════════════════════════════════════ */
+function renderTickerBar(){
+  const bar=document.getElementById('tickerBar');
+  // keep the add row at end — rebuild everything before it
+  const addRow=document.querySelector('.ticker-add');
+  // remove all existing ticker wrapper spans (not the add row)
+  [...bar.children].forEach(c=>{ if(c!==addRow && !c.classList.contains('ticker-add')) c.remove(); });
+  // insert before addRow
+  allTickers.forEach(t=>{
+    const isActive=activeTickers.includes(t);
+    const wrap=document.createElement('span');
+    wrap.style.display='inline-flex';wrap.style.gap='0';
+    const btn=document.createElement('button');
+    btn.className='ticker-btn'+(isActive?' active':'');
+    btn.textContent=t;
+    btn.onclick=()=>toggleTicker(t);
+    const iv=document.createElement('button');
+    iv.className='iv-btn';
+    iv.id='ivbtn-'+t;
+    iv.textContent='IV';
+    iv.title='Fetch live IV for '+t+' options from IBKR';
+    iv.disabled=!ibkrConnected;
+    iv.onclick=(e)=>{e.stopPropagation();fetchIVForTicker(t);};
+    const del=document.createElement('button');
+    del.className='ticker-btn del';
+    del.textContent='×';
+    del.title='remove '+t+' from list';
+    del.onclick=(e)=>{e.stopPropagation();removeTicker(t);};
+    wrap.appendChild(btn);
+    wrap.appendChild(iv);
+    wrap.appendChild(del);
+    bar.insertBefore(wrap,addRow);
+  });
+}
+
+function toggleTicker(t){
+  const idx=activeTickers.indexOf(t);
+  if(idx>=0) activeTickers.splice(idx,1);
+  else activeTickers.push(t);
+  renderTickerBar();
+}
+
+async function fetchIVForTicker(t){
+  if(!ibkrConnected){ showToast('Not connected to IBKR','err'); return; }
+  const btn=document.getElementById('ivbtn-'+t);
+  if(btn){ btn.textContent='…'; btn.className='iv-btn loading'; btn.disabled=true; }
+  const url=document.getElementById('proxyUrl').value.trim().replace(/\/$/,'');
+  try{
+    const res=await fetch(url+'/iv?symbol='+encodeURIComponent(t),{signal:AbortSignal.timeout(30000)});
+    const j=await res.json();
+    if(!res.ok) throw new Error(j.error||'HTTP '+res.status);
+    const ivMap=j.iv||{};
+    let updated=0;
+    options.forEach(o=>{
+      if(o.symbol!==t) return;
+      // Key format: YYYYMMDD|strike|right
+      const expKey=o.expiry.replace(/-/g,'');
+      const right=o.type==='call'?'C':'P';
+      const targetStrike=parseFloat(o.strike);
+      
+      for(const k in ivMap){
+        const parts=k.split('|');
+        if(parts.length===3 && parts[0]===expKey && parseFloat(parts[1])===targetStrike && parts[2]===right){
+          if(ivMap[k] != null){
+            o.iv=ivMap[k];
+            updated++;
+          }
+          break;
+        }
+      }
+    });
+    renderOptions(); updateChart();
+    const total=options.filter(o=>o.symbol===t).length;
+    showToast(`${t} IV: ${updated}/${total} updated`,'ok',3000);
+    if(btn){ btn.textContent='IV ✓'; btn.className='iv-btn done'; btn.disabled=false; }
+  } catch(e){
+    showToast('IV fetch failed: '+e.message,'err',4000);
+    if(btn){ btn.textContent='IV !'; btn.className='iv-btn err'; btn.disabled=false; }
+  }
+}
+
+function removeTicker(t){
+  allTickers=allTickers.filter(x=>x!==t);
+  activeTickers=activeTickers.filter(x=>x!==t);
+  // also remove any ibkr positions for this ticker from portfolio cache
+  ibkrPortfolio.options=ibkrPortfolio.options.filter(o=>o.symbol!==t);
+  ibkrPortfolio.underlyings=ibkrPortfolio.underlyings.filter(u=>u.symbol!==t);
+  renderTickerBar();
+}
+
+function addTickerBtn(){
+  const inp=document.getElementById('tickerAddInp');
+  const t=inp.value.trim().toUpperCase();
+  if(!t) return;
+  if(!allTickers.includes(t)) allTickers.push(t);
+  if(!activeTickers.includes(t)) activeTickers.push(t);
+  inp.value='';
+  renderTickerBar();
+}
+
+/* ═══════════════════════════════════════════════════════
+   IMPORT FROM IBKR
+═══════════════════════════════════════════════════════ */
+function importTickerPositions(kind){
+  if(!ibkrConnected){ showToast('Not connected to IBKR. Please connect first.','err'); return; }
+  if(!allTickers.length){ showToast('No positions found in IBKR portfolio to import.','err'); return; }
+  if(!activeTickers.length){ showToast('Select at least one ticker from the bar first.','err'); return; }
+  let imported=0;
+  if(kind==='options'||kind==='all'){
+    const filtered=(ibkrPortfolio.options||[]).filter(o=>activeTickers.includes(o.symbol));
+    filtered.forEach(o=>{
+      // check if already imported (same symbol/strike/type/expiry)
+      const dup=options.find(x=>x.ibkrKey&&x.ibkrKey===ibkrKey(o));
+      if(dup){ showToast(`${o.symbol} ${o.type} ${o.strike} already in list`,'',1500); return; }
+      options.push({
+        id:++optId,
+        type:o.type,
+        strike:o.strike,
+        premium:o.premium,
+        mult:o.mult||100,
+        pos:o.pos,
+        iv:o.iv||0,  // 0 = not set; BS curve disabled until user enters IV
+        expiry:o.expiry||'',
+        enabled:true,
+        symbol:o.symbol,
+        ibkrKey:ibkrKey(o),
+        source:'ibkr'
+      });
+      imported++;
+    });
+  }
+  if(kind==='underlying'||kind==='all'){
+    const filtered=(ibkrPortfolio.underlyings||[]).filter(u=>activeTickers.includes(u.symbol));
+    filtered.forEach(u=>{
+      const dup=underlyings.find(x=>x.ibkrKey&&x.ibkrKey===undIbkrKey(u));
+      if(dup){ return; }
+      underlyings.push({
+        id:++undId,
+        entry:u.entry||u.avgCost||0,
+        mult:u.mult||1,
+        pos:u.pos,
+        enabled:true,
+        symbol:u.symbol,
+        ibkrKey:undIbkrKey(u),
+        source:'ibkr'
+      });
+      imported++;
+    });
+  }
+  renderOptions(); renderUnderlyings(); rebuildSlider(); updateChart();
+  showToast(imported>0?`Imported ${imported} position(s)`:'Nothing new to import (all already present)', imported>0?'ok':'',2500);
+}
+
+function ibkrKey(o){ return `${o.symbol}|${o.type}|${o.strike}|${o.expiry}`; }
+function undIbkrKey(u){ return `${u.symbol}|${u.pos}`; }
+
+/* ═══════════════════════════════════════════════════════
+   DATE HELPERS
+═══════════════════════════════════════════════════════ */
+function today0(){ const d=new Date(); d.setHours(0,0,0,0); return d.getTime(); }
+function parseDate(s){ if(!s) return null; const d=new Date(s+'T00:00:00'); return isNaN(d.getTime())?null:d.getTime(); }
+function msToStr(ms){ const d=new Date(ms),pad=n=>n.toString().padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function daysBetween(a,b){ return Math.round((b-a)/86400000); }
+
+/* ═══════════════════════════════════════════════════════
+   BLACK-SCHOLES
+═══════════════════════════════════════════════════════ */
+function erf(x){
+  const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+  const sign=x<0?-1:1; x=Math.abs(x);
+  const t=1/(1+p*x);
+  return sign*(1-(((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t)*Math.exp(-x*x));
+}
+function N(x){ return 0.5*(1+erf(x/Math.sqrt(2))); }
+function bsPrice(S,K,T,r,sig,type){
+  if(T<=0||sig<=0) return type==='call'?Math.max(0,S-K):Math.max(0,K-S);
+  const sq=Math.sqrt(T);
+  const d1=(Math.log(S/K)+(r+0.5*sig*sig)*T)/(sig*sq);
+  const d2=d1-sig*sq;
+  return type==='call'?S*N(d1)-K*Math.exp(-r*T)*N(d2):K*Math.exp(-r*T)*N(-d2)-S*N(-d1);
+}
+
+/* ═══════════════════════════════════════════════════════
+   SLIDER  (hybrid: first 20% = intraday minutes, rest = whole days)
+═══════════════════════════════════════════════════════ */
+
+// Slider has 1000 integer steps (0 = furthest expiry, 1000 = now/0DTE).
+// Steps 0..799  (80%) map linearly to totalDays..1  (whole-day resolution).
+// Steps 800..1000 (20%) map linearly to 0 days with minute resolution (0..1439 min).
+const SLIDER_STEPS   = 1000;
+const SLIDER_DAY_END = 800;   // step at which intraday zone begins
+
+function sliderStepToMs(step, sliderMaxMs, totalDays){
+  if(step <= SLIDER_DAY_END){
+    const frac = step / SLIDER_DAY_END;
+    return sliderMinMs + frac * (sliderMaxMs - sliderMinMs);
+  } else {
+    const frac = (step - SLIDER_DAY_END) / (SLIDER_STEPS - SLIDER_DAY_END);
+    return sliderMaxMs + frac * 86400000;
+  }
+}
+
+function msToSliderStep(ms, sliderMaxMs, totalDays){
+  if(ms <= sliderMaxMs){
+    const frac = (ms - sliderMinMs) / (sliderMaxMs - sliderMinMs || 1);
+    return Math.max(0, Math.min(SLIDER_DAY_END, Math.round(frac * SLIDER_DAY_END)));
+  } else {
+    const frac = (ms - sliderMaxMs) / 86400000;
+    return SLIDER_DAY_END + Math.max(0, Math.min(SLIDER_STEPS - SLIDER_DAY_END, Math.round(frac * (SLIDER_STEPS - SLIDER_DAY_END))));
+  }
+}
+
+function rebuildSlider(){
+  const slider=document.getElementById('dteSlider'), info=document.getElementById('dteInfo');
+  const expiries=options.filter(o=>o.enabled&&o.expiry).map(o=>parseDate(o.expiry)).filter(Boolean);
+  if(!expiries.length){ slider.disabled=true;viewDateMs=null;sliderMinMs=null;sliderMaxMs=null;info.textContent='— add expiry to legs';return; }
+  const t0=today0(); sliderMinMs=t0; sliderMaxMs=Math.max(...expiries);
+  const totalDays=Math.max(1, daysBetween(sliderMinMs,sliderMaxMs));
+  slider.disabled=false; slider.min=0; slider.max=SLIDER_STEPS; slider.step=1;
+  if(viewDateMs===null||viewDateMs<sliderMinMs||viewDateMs>sliderMaxMs+86400000){
+    viewDateMs=sliderMinMs; slider.value=0;
+  } else {
+    slider.value=msToSliderStep(viewDateMs, sliderMaxMs, totalDays);
+  }
+  updateDteInfo();
+}
+
+function updateDteInfo(){
+  if(viewDateMs===null){document.getElementById('dteInfo').innerHTML='— add expiry to legs';return;}
+  const step=parseInt(document.getElementById('dteSlider').value);
+  const isIntraday = step > SLIDER_DAY_END;
+  let infoText = '';
+  if(isIntraday){
+    const minutesLeft = Math.round((sliderMaxMs + 86400000 - viewDateMs) / 60000);
+    const h=Math.floor(minutesLeft/60), m=minutesLeft%60;
+    const pad=n=>n.toString().padStart(2,'0');
+    infoText=`0DTE  —  ${h}h ${pad(m)}m to expiry`;
+  } else {
+    const dateStr=msToStr(viewDateMs);
+    const expiries=options.filter(o=>o.enabled&&o.expiry).map(o=>parseDate(o.expiry)).filter(Boolean);
+    const dtes=expiries.map(e=>Math.round((e + 86400000 - viewDateMs)/86400000)).filter(v=>v>=0);
+    const minDte=dtes.length?Math.min(...dtes):0;
+    infoText=`${minDte}d to expiry  (${dateStr})`;
+  }
+  
+  const missingIv = options.some(o => o.enabled && o.expiry && !(parseFloat(o.iv) > 0));
+  if(missingIv) {
+    infoText += ` <span style="color:#e8a020; margin-left:6px; cursor:help;" title="Missing IV on some legs. The curve will use intrinsic value for those options.">⚠️ missing IV</span>`;
+  }
+  document.getElementById('dteInfo').innerHTML=infoText;
+}
+
+function onDteScrub(){
+  if(!sliderMaxMs) return;
+  const step=parseInt(document.getElementById('dteSlider').value);
+  const totalDays=Math.max(1, daysBetween(sliderMinMs,sliderMaxMs));
+  viewDateMs=sliderStepToMs(step, sliderMaxMs, totalDays);
+  updateDteInfo(); updateChart();
+}
+
+/* ═══════════════════════════════════════════════════════
+   PAYOFF FUNCTIONS
+═══════════════════════════════════════════════════════ */
+function payoffAt(S){
+  let p=0;
+  for(const o of options){
+    if(!o.enabled) continue;
+    const intr=o.type==='call'?Math.max(0,S-o.strike):Math.max(0,o.strike-S);
+    p+=o.pos*o.mult*(intr-o.premium);
+  }
+  for(const u of underlyings){ if(!u.enabled) continue; p+=u.pos*u.mult*(S-u.entry); }
+  return p;
+}
+function bsPayoffAt(S){
+  if(viewDateMs===null) return null;
+  const r=parseFloat(document.getElementById('rateInp').value||5)/100;
+  let p=0, anyBS=false;
+  for(const o of options){
+    if(!o.enabled) continue;
+    const expMs=parseDate(o.expiry);
+    let val;
+    if(expMs&&(o.iv||0)>0){
+          const T=Math.max(0,(expMs+86400000-viewDateMs))/(365*86400000); // fractional years, ends at midnight of expiry day
+      val=bsPrice(S,o.strike,T,r,(o.iv)/100,o.type); anyBS=true;
+    } else { val=o.type==='call'?Math.max(0,S-o.strike):Math.max(0,o.strike-S); }
+    p+=o.pos*o.mult*(val-o.premium);
+  }
+  for(const u of underlyings){ if(!u.enabled) continue; p+=u.pos*u.mult*(S-u.entry); }
+  return anyBS?p:null;
+}
+
+/* ═══════════════════════════════════════════════════════
+   BREAKEVENS + GRID
+═══════════════════════════════════════════════════════ */
+function computeBreakevens(){
+  const strikes=[...new Set(options.filter(o=>o.enabled).map(o=>o.strike))].sort((a,b)=>a-b);
+  const lo=strikes.length?strikes[0]-10000:-10000, hi=strikes.length?strikes[strikes.length-1]+10000:10000;
+  const bounds=[lo,...strikes,hi], res=[], seen=new Set();
+  for(let i=0;i<bounds.length-1;i++){
+    const a=bounds[i],b=bounds[i+1],x1=a+(b-a)*.25,x2=a+(b-a)*.75;
+    const f1=payoffAt(x1),f2=payoffAt(x2),sl=(f2-f1)/(x2-x1);
+    let z;
+    if(Math.abs(sl)<1e-12){if(Math.abs(f1)<1e-6)z=(a+b)/2;else continue;}
+    else z=x1-f1/sl;
+    if(z<a-1e-6||z>b+1e-6) continue;
+    if(Math.abs(payoffAt(z))>1e-4) continue;
+    const k=z.toFixed(4); if(!seen.has(k)){res.push(z);seen.add(k);}
+  }
+  return res.sort((a,b)=>a-b);
+}
+function buildGrid(lo,hi){
+  const pts=new Set();
+  for(let i=0;i<500;i++) pts.add(+(lo+(hi-lo)*i/499).toFixed(8));
+  for(const o of options) if(o.enabled&&o.strike>=lo&&o.strike<=hi) pts.add(o.strike);
+  for(const bv of computeBreakevens()) if(bv>=lo&&bv<=hi) pts.add(bv);
+  return [...pts].filter(p=>p>=lo&&p<=hi).sort((a,b)=>a-b);
+}
+function getRange(){
+  const auto=document.getElementById('rangeAuto').checked;
+  let lo,hi;
+  if(auto){
+    const strikes=options.filter(o=>o.enabled).map(o=>o.strike);
+    const entries=underlyings.filter(u=>u.enabled).map(u=>u.entry);
+    const pts=[...strikes,...entries];
+    if(pts.length){
+      const mn=Math.min(...pts), mx=Math.max(...pts);
+      // Generous downside buffer so loss tails are never clipped.
+      // For penny-priced underlyings (< 5) use very wide room.
+      const bufHi=p=>p>=1000?.08:p>=500?.10:p>=100?.15:p>=10?.20:.40;
+      const bufLo=p=>p>=1000?.15:p>=500?.20:p>=100?.30:p>=10?.50:1.00;
+      hi=mx*(1+bufHi(mx));
+      lo=Math.max(0, mn*(1-bufLo(mn)));
+      // Guarantee at least half the visible span below the lowest anchor point
+      // so max-loss tails are always drawn even for very low-priced strikes.
+      const span=hi-lo;
+      lo=Math.max(0, Math.min(lo, mn-span*0.5));
+      document.getElementById('rangeMin').value=lo.toFixed(4);
+      document.getElementById('rangeMax').value=hi.toFixed(4);
+    } else { lo=parseFloat(document.getElementById('rangeMin').value)||1; hi=parseFloat(document.getElementById('rangeMax').value)||1000; }
+  } else {
+    lo=parseFloat(document.getElementById('rangeMin').value);
+    hi=parseFloat(document.getElementById('rangeMax').value);
+  }
+  return(isFinite(lo)&&isFinite(hi)&&lo<hi)?{lo,hi}:null;
+}
+
+/* ═══════════════════════════════════════════════════════
+   CHART
+═══════════════════════════════════════════════════════ */
+const C_POS='#1D9E75',C_NEG='#E24B4A';
+function expirySegColor(ctx){ const i=ctx.p1DataIndex; if(i<1||i>=currentPrices.length) return C_POS; return payoffAt((currentPrices[i-1]+currentPrices[i])/2)>=0?C_POS:C_NEG; }
+function bsSegColor(ctx){ const i=ctx.p1DataIndex; if(i<1||i>=currentPrices.length) return C_POS; const v=bsPayoffAt((currentPrices[i-1]+currentPrices[i])/2); return(v===null||v>=0)?C_POS:C_NEG; }
+
+function updateChart(){
+  const range=getRange(); if(!range) return;
+  const {lo,hi}=range;
+  currentPrices=buildGrid(lo,hi);
+  currentPayoffs=currentPrices.map(p=>payoffAt(p));
+  const hasBs=bsPayoffAt((lo+hi)/2)!==null;
+  currentBSPayoffs=hasBs?currentPrices.map(p=>{const v=bsPayoffAt(p);return v===null?null:v;}):[];
+  const datasets=[{label:'expiry',data:currentPayoffs,borderWidth:2.5,pointRadius:0,tension:0,fill:false,segment:{borderColor:expirySegColor}}];
+  if(hasBs) datasets.push({label:'BS',data:currentBSPayoffs,borderWidth:2,pointRadius:0,tension:0.2,fill:false,borderDash:[4,3],segment:{borderColor:bsSegColor}});
+  if(!chart){
+    const ctx=document.getElementById('payoffChart').getContext('2d');
+    chart=new Chart(ctx,{
+      type:'line',data:{labels:currentPrices,datasets},
+      options:{
+        responsive:true,maintainAspectRatio:false,animation:{duration:0},
+        plugins:{legend:{display:false},tooltip:{enabled:false}},
+        scales:{
+          x:{type:'linear',ticks:{maxTicksLimit:10,font:{family:'monospace',size:10},color:'#5a5a58',maxRotation:0,callback:v=>parseFloat((+v).toFixed(4))},grid:{color:'rgba(80,80,75,.3)'},border:{display:false}},
+          y:{ticks:{font:{family:'monospace',size:10},color:'#5a5a58',callback:v=>parseFloat((+v).toFixed(4))},
+             grid:{color:c=>c.tick.value===0?'rgba(150,148,142,.5)':'rgba(80,80,75,.25)',lineWidth:c=>c.tick.value===0?1.5:.5},border:{display:false}}
+        }
+      }
+    });
+    setupCrosshair();
+  } else {
+    chart.data.labels=currentPrices; chart.data.datasets=datasets; chart.update('none');
+  }
+  updateMetrics();
+  updateDteInfo();
+}
+
+/* ═══════════════════════════════════════════════════════
+   CROSSHAIR
+═══════════════════════════════════════════════════════ */
+function setupCrosshair(){
+  const wrap=document.getElementById('chartWrap');
+  function hide(){ document.getElementById('xhairV').style.display='none'; document.getElementById('xhairH').style.display='none'; document.getElementById('xhairTip').style.display='none'; }
+  wrap.addEventListener('mouseleave',hide);
+  wrap.addEventListener('mousemove',e=>{
+    if(!chart||!currentPrices.length){hide();return;}
+    const rect=wrap.getBoundingClientRect(), mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    const ca=chart.chartArea;
+    if(mx<ca.left||mx>ca.right||my<ca.top||my>ca.bottom){hide();return;}
+    const price=chart.scales.x.getValueForPixel(mx); if(!isFinite(price)){hide();return;}
+    const pExp=payoffAt(price), pBS=bsPayoffAt(price), hasBs=pBS!==null;
+    const py=chart.scales.y.getPixelForValue(pExp);
+    document.getElementById('xhairV').style.cssText=`display:block;left:${mx}px`;
+    document.getElementById('xhairH').style.cssText=`display:block;top:${py}px`;
+    document.getElementById('ctPrice').textContent='price: '+parseFloat(price.toFixed(4));
+    const expColor=pExp>=0?C_POS:C_NEG;
+    document.getElementById('ctDotExp').style.background=expColor;
+    const expEl=document.getElementById('ctExp'); expEl.textContent=(pExp>=0?'+':'')+pExp.toFixed(2); expEl.style.color=expColor;
+    const bsRow=document.getElementById('ctRowBS');
+    if(hasBs){ bsRow.style.display='flex'; const bsColor=pBS>=0?C_POS:C_NEG; document.getElementById('ctBS').textContent=(pBS>=0?'+':'')+pBS.toFixed(2); document.getElementById('ctBS').style.color=bsColor; document.getElementById('ctDotBS').style.background=bsColor; document.getElementById('ctBSlbl').textContent='BS '+msToStr(viewDateMs); }
+    else bsRow.style.display='none';
+    const tip=document.getElementById('xhairTip'); tip.style.display='block';
+    const TW=180,TH=hasBs?76:52; let tx=mx+12,ty=py-TH/2;
+    if(tx+TW>rect.width-4) tx=mx-TW-12;
+    ty=Math.max(ca.top,Math.min(ca.bottom-TH,ty));
+    tip.style.cssText+=`;display:block;left:${tx}px;top:${ty}px`;
+  });
+}
+
+/* ═══════════════════════════════════════════════════════
+   METRICS
+═══════════════════════════════════════════════════════ */
+function fmt(v){ if(!isFinite(v)) return '—'; const s=v>=0?'+':''; if(Math.abs(v)>=1e6) return s+(v/1e6).toFixed(2)+'M'; if(Math.abs(v)>=1e3) return s+(v/1e3).toFixed(2)+'k'; return s+v.toFixed(2); }
+function updateMetrics(){
+  const strikes=options.filter(o=>o.enabled).map(o=>o.strike);
+  const lo=strikes.length?Math.max(0,Math.min(...strikes)*.1):0, hi=strikes.length?Math.max(...strikes)*3:10000;
+  const pts=[]; for(let i=0;i<=3000;i++) pts.push(lo+(hi-lo)*i/3000);
+  for(const s of strikes) pts.push(s-.001,s,s+.001);
+  const po=pts.map(p=>payoffAt(p)); const maxP=Math.max(...po), minP=Math.min(...po);
+  const unbUp=payoffAt(hi)-payoffAt(hi*.9)>0.1, unbDn=payoffAt(.001)-payoffAt(lo*.5+1)<-0.1;
+  const mmp=document.getElementById('mMaxProfit'); mmp.textContent=unbUp?'∞':fmt(maxP); mmp.className='metric-val '+(unbUp||maxP>0?'pos':maxP<0?'neg':'neu');
+  const mml=document.getElementById('mMaxLoss'); mml.textContent=unbDn?'-∞':fmt(minP); mml.className='metric-val '+(unbDn||minP<0?'neg':minP>0?'pos':'neu');
+  const net=options.filter(o=>o.enabled).reduce((s,o)=>s+o.pos*o.mult*(-o.premium),0);
+  const mnp=document.getElementById('mNetPrem'); mnp.textContent=fmt(net); mnp.className='metric-val '+(net>0?'pos':net<0?'neg':'neu');
+  const bvs=computeBreakevens();
+  document.getElementById('mBreakeven').textContent=bvs.length?bvs.map(v=>v.toFixed(2)).join(', '):'—';
+}
+
+/* ═══════════════════════════════════════════════════════
+   TABLE HELPERS
+═══════════════════════════════════════════════════════ */
+function clearAll(){ options=[]; underlyings=[]; renderOptions(); renderUnderlyings(); rebuildSlider(); updateChart(); }
+function addOption(type='put',strike=100,premium=1,mult=100,pos=1,iv=20,expiry='',enabled=true){
+  options.push({id:++optId,type,strike,premium,mult,pos,iv,expiry,enabled,source:'manual'});
+  renderOptions(); rebuildSlider(); updateChart();
+}
+function addUnderlying(entry=100,mult=1,pos=1,enabled=true){
+  underlyings.push({id:++undId,entry,mult,pos,enabled,symbol:'',source:'manual'});
+  renderUnderlyings(); updateChart();
+}
+function removeOption(id){ options=options.filter(o=>o.id!==id); renderOptions(); rebuildSlider(); updateChart(); }
+function removeUnderlying(id){ underlyings=underlyings.filter(u=>u.id!==id); renderUnderlyings(); updateChart(); }
+function toggleOption(id){ const o=options.find(o=>o.id===id); if(!o) return; o.enabled=!o.enabled; const r=document.querySelector(`#optTbody tr[data-id="${id}"]`); if(r) r.className='leg-row'+(o.enabled?'':' leg-disabled'); rebuildSlider(); updateChart(); }
+function toggleUnderlying(id){ const u=underlyings.find(u=>u.id===id); if(!u) return; u.enabled=!u.enabled; const r=document.querySelector(`#undTbody tr[data-id="${id}"]`); if(r) r.className='leg-row'+(u.enabled?'':' leg-disabled'); updateChart(); }
+function updateOption(id,field,val){ const o=options.find(o=>o.id===id); if(!o) return; if(field==='type'||field==='expiry') o[field]=val; else o[field]=parseFloat(val)||0; if(field==='expiry') rebuildSlider(); if(field==='iv') renderOptions(); updateChart(); }
+function updateUnderlying(id,field,val){ const u=underlyings.find(u=>u.id===id); if(!u) return; if(field==='symbol') u[field]=val; else u[field]=parseFloat(val)||0; updateChart(); }
+function toggleAutoRange(){ const a=document.getElementById('rangeAuto').checked; document.getElementById('rangeMin').disabled=a; document.getElementById('rangeMax').disabled=a; updateChart(); }
+
+function ni(field,id,val,fn){ return `<input type="number" value="${val}" step="any" oninput="${fn}(${id},'${field}',this.value)">`; }
+function di(field,id,val,fn){ return `<input type="date" value="${val||''}" style="color-scheme:dark" onchange="${fn}(${id},'${field}',this.value)">`; }
+function srcBadge(src){ return src==='ibkr'?'<span class="src-badge">ibkr</span>':'<span class="src-badge manual">—</span>'; }
+
+function renderOptions(){
+  document.getElementById('optEmpty').style.display=options.length?'none':'block';
+  document.getElementById('optTbody').innerHTML=options.map(o=>`
+    <tr class="leg-row${o.enabled?'':' leg-disabled'}" data-id="${o.id}">
+      <td class="opt-col-chk td-check"><input type="checkbox" ${o.enabled?'checked':''} onchange="toggleOption(${o.id})"></td>
+      <td class="opt-col-src td-src">${srcBadge(o.source)}</td>
+      <td class="opt-col-type"><select onchange="updateOption(${o.id},'type',this.value)">
+        <option value="call" ${o.type==='call'?'selected':''}>call</option>
+        <option value="put" ${o.type==='put'?'selected':''}>put</option>
+      </select></td>
+      <td class="opt-col-pos">${ni('pos',o.id,o.pos,'updateOption')}</td>
+      <td class="opt-col-strike">${ni('strike',o.id,o.strike,'updateOption')}</td>
+      <td class="opt-col-prem">${ni('premium',o.id,o.premium,'updateOption')}</td>
+      <td class="opt-col-mult">${ni('mult',o.id,o.mult,'updateOption')}</td>
+      <td class="opt-col-iv"><input type="number" value="${o.iv||''}" step="0.1" placeholder="IV%" title="${o.iv?'':'IV not imported — enter manually to enable BS curve'}" style="font-family:inherit;font-size:12px;background:#0d0d0d;border:.5px solid ${o.iv?'#525250':'#8b4500'};border-radius:4px;color:${o.iv?'#d4d4d0':'#e8a020'};padding:4px 5px;width:100%;height:30px" oninput="updateOption(${o.id},'iv',this.value)"></td>
+      <td class="opt-col-exp">${di('expiry',o.id,o.expiry,'updateOption')}</td>
+      <td class="opt-col-del"><button class="del-btn" onclick="removeOption(${o.id})">×</button></td>
+    </tr>`).join('');
+}
+function renderUnderlyings(){
+  document.getElementById('undEmpty').style.display=underlyings.length?'none':'block';
+  document.getElementById('undTbody').innerHTML=underlyings.map(u=>`
+    <tr class="leg-row${u.enabled?'':' leg-disabled'}" data-id="${u.id}">
+      <td class="und-col-chk td-check"><input type="checkbox" ${u.enabled?'checked':''} onchange="toggleUnderlying(${u.id})"></td>
+      <td class="und-col-src td-src">${srcBadge(u.source)}</td>
+      <td class="und-col-sym"><input type="text" value="${u.symbol||''}" style="font-family:inherit;font-size:12px;background:#0d0d0d;border:.5px solid #525250;border-radius:4px;color:#d4d4d0;padding:4px 5px;width:100%;height:30px" oninput="updateUnderlying(${u.id},'symbol',this.value)"></td>
+      <td class="und-col-pos">${ni('pos',u.id,u.pos,'updateUnderlying')}</td>
+      <td class="und-col-entry">${ni('entry',u.id,u.entry,'updateUnderlying')}</td>
+      <td class="und-col-mult">${ni('mult',u.id,u.mult,'updateUnderlying')}</td>
+      <td class="und-col-del"><button class="del-btn" onclick="removeUnderlying(${u.id})">×</button></td>
+    </tr>`).join('');
+}
+
+/* ═══════════════════════════════════════════════════════
+   IMPORT / EXPORT
+═══════════════════════════════════════════════════════ */
+function exportData(){
+  const d={
+    rangeAuto:document.getElementById('rangeAuto').checked,
+    rangeMin:document.getElementById('rangeMin').value,
+    rangeMax:document.getElementById('rangeMax').value,
+    rate:document.getElementById('rateInp').value,
+    options:options.map(({type,strike,premium,mult,pos,iv,expiry,enabled,symbol,source})=>({type,strike,premium,mult,pos,iv,expiry,enabled,symbol:symbol||'',source:source||'manual'})),
+    underlyings:underlyings.map(({entry,mult,pos,enabled,symbol,source})=>({entry,mult,pos,enabled,symbol:symbol||'',source:source||'manual'}))
+  };
+  const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob), a=document.createElement('a'); a.href=url;
+  const now=new Date(),pad=n=>n.toString().padStart(2,'0');
+  a.download=`payoff_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+  a.click(); URL.revokeObjectURL(url);
+}
+function importData(e){
+  const file=e.target.files[0]; if(!file) return;
+  const rd=new FileReader();
+  rd.onload=evt=>{
+    try{
+      const d=JSON.parse(evt.target.result);
+      if(d.rangeAuto!==undefined){ document.getElementById('rangeAuto').checked=d.rangeAuto; document.getElementById('rangeMin').disabled=d.rangeAuto; document.getElementById('rangeMax').disabled=d.rangeAuto; }
+      if(d.rangeMin) document.getElementById('rangeMin').value=d.rangeMin;
+      if(d.rangeMax) document.getElementById('rangeMax').value=d.rangeMax;
+      if(d.rate) document.getElementById('rateInp').value=d.rate;
+      options=(d.options||[]).map(o=>({...o,id:++optId,iv:o.iv||20,expiry:o.expiry||'',source:o.source||'manual'}));
+      underlyings=(d.underlyings||[]).map(u=>({...u,id:++undId,source:u.source||'manual'}));
+      renderOptions(); renderUnderlyings(); rebuildSlider(); updateChart();
+      showToast('Imported successfully','ok');
+    } catch(err){ showToast('Import error: '+err,'err'); }
+  };
+  rd.readAsText(file); e.target.value='';
+}
+
+updateChart();
+</script>
+</body>
+</html>

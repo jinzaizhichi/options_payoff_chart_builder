@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""
+ibkr_proxy.py  —  Lightweight bridge between the Payoff Builder and IBKR TWS / IB Gateway
+─────────────────────────────────────────────────────────────────────────────────────────────
+Usage:
+    python ibkr_proxy.py [--tws-host 127.0.0.1] [--tws-port 7497] [--proxy-port 5001]
+
+Defaults:
+    TWS paper trading port : 7497   (live trading: 7496)
+    IB Gateway paper port  : 4002   (live: 4001)
+    Proxy listens on       : 5001   (must match the URL in the Payoff Builder)
+
+Requirements:
+    pip install ibapi flask flask-cors
+
+TWS / Gateway setup:
+    TWS  → Edit → Global Configuration → API → Settings
+           ✓ Enable ActiveX and Socket Clients
+           ✓ Allow connections from localhost only (recommended)
+    Gateway → Configure → API → Settings (same checkboxes)
+─────────────────────────────────────────────────────────────────────────────────────────────
+"""
+
+import argparse
+import threading
+import time
+import sys
+from datetime import datetime, timezone
+
+try:
+    from flask import Flask, jsonify, request as flask_request
+    from flask_cors import CORS
+except ImportError:
+    sys.exit("Missing dependencies. Run:  pip install flask flask-cors ibapi")
+
+try:
+    from ibapi.client import EClient
+    from ibapi.wrapper import EWrapper
+    from ibapi.contract import Contract
+except ImportError:
+    sys.exit("Missing ibapi. Run:  pip install ibapi")
+
+SENTINEL = 1.7976931348623157e+308
+
+
+# ──────────────────────────────────────────────────────────
+# Persistent IBKR app — one long-lived connection
+# ──────────────────────────────────────────────────────────
+
+class IBApp(EWrapper, EClient):
+    def __init__(self):
+        EWrapper.__init__(self)
+        EClient.__init__(self, wrapper=self)
+
+        self._connected = False
+        self._ready = threading.Event()
+
+        # Portfolio state — reset before each reqAccountUpdates call
+        self.portfolio_items = []
+        self._acct_done = threading.Event()
+
+        # IV state
+        self._iv_data = {}   # reqId → float (0–1)
+        self._iv_events = {}   # reqId → threading.Event
+        self._iv_lock = threading.Lock()
+
+        # Serialise all TWS request sequences (portfolio vs IV)
+        self._request_lock = threading.Lock()
+
+    # ── Connection ──────────────────────────────────────────
+
+    def connectAck(self): pass
+
+    def nextValidId(self, orderId):
+        self._connected = True
+        self._ready.set()
+
+    def connectionClosed(self):
+        self._connected = False
+        print("[IBKR] connection closed")
+
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
+        # Silence purely informational codes
+        if errorCode in (2100, 2104, 2106, 2107, 2108, 2158, 2119, 2176):
+            return
+        # No market data / bad request — unblock any waiting IV event
+        if errorCode in (354, 300, 321, 10168):
+            print(
+                f"  [IV] reqId={reqId} code={errorCode}: {errorString.strip()} — skipping")
+            with self._iv_lock:
+                ev = self._iv_events.get(reqId)
+            if ev:
+                ev.set()
+            return
+        print(f"[IBKR] error reqId={reqId} code={errorCode}: {errorString}")
+
+    # ── Portfolio callbacks ──────────────────────────────────
+
+    def updatePortfolio(self, contract, position, marketPrice, marketValue,
+                        averageCost, unrealizedPNL, realizedPNL, accountName):
+        if position == 0:
+            return
+        self.portfolio_items.append({
+            "contract":      contract,
+            "position":      position,
+            "averageCost":   averageCost,
+            "unrealizedPNL": unrealizedPNL,
+            "realizedPNL":   realizedPNL,
+        })
+
+    def accountDownloadEnd(self, accountName):
+        self._acct_done.set()
+
+    # ── Market data callbacks ────────────────────────────────
+
+    def tickPrice(self, reqId, tickType, price, attrib): pass
+    def tickSize(self, reqId, tickType, size): pass
+    def tickSnapshotEnd(self, reqId): pass
+
+    def tickGenericValue(self, reqId, tickType, value):
+        # tickType 23 = historical volatility, 24 = implied volatility
+        if tickType in (23, 24) and value and 0 < value < SENTINEL:
+            print(
+                f"  [tick-gen] reqId={reqId} tickType={tickType} val={value:.4f}")
+            with self._iv_lock:
+                if reqId not in self._iv_data:
+                    self._iv_data[reqId] = value
+                ev = self._iv_events.get(reqId)
+            if ev:
+                ev.set()
+
+    def tickOptionComputation(self, reqId, tickType, tickAttrib,
+                              impliedVol, delta, optPrice, pvDividend,
+                              gamma, vega, theta, undPrice):
+        iv_str = f"{impliedVol:.6f}" if impliedVol is not None else "None"
+        print(f"  [tick] reqId={reqId} tickType={tickType} impliedVol={iv_str}"
+              f" undPrice={undPrice} registered={reqId in self._iv_events} already_got={reqId in self._iv_data}")
+        if impliedVol is not None and 0 < impliedVol < SENTINEL:
+            with self._iv_lock:
+                if reqId not in self._iv_data:
+                    self._iv_data[reqId] = impliedVol
+                ev = self._iv_events.get(reqId)
+            if ev:
+                ev.set()
+
+
+# ──────────────────────────────────────────────────────────
+# Singleton connection manager
+# ──────────────────────────────────────────────────────────
+
+class IBKRConnection:
+    def __init__(self, host, port, client_id=1):
+        self.host = host
+        self.port = port
+        self.client_id = client_id
+        self.app = None
+        self._thread = None
+        self._lock = threading.Lock()   # protects connect/reconnect
+
+    def ensure_connected(self, timeout=15):
+        """Return a live IBApp, (re)connecting if necessary."""
+        with self._lock:
+            if self.app and self.app._connected:
+                return self.app
+
+            print("[IBKR] (re)connecting…")
+            app = IBApp()
+            try:
+                app.connect(self.host, self.port, clientId=self.client_id)
+            except Exception as e:
+                raise ConnectionError(
+                    f"Could not connect to TWS/Gateway at {self.host}:{self.port} — {e}")
+
+            t = threading.Thread(target=app.run, daemon=True)
+            t.start()
+
+            if not app._ready.wait(timeout=timeout):
+                app.disconnect()
+                raise TimeoutError(
+                    "Timed out waiting for TWS connection acknowledgement")
+
+            self.app = app
+            self._thread = t
+            print("[IBKR] connected")
+            return self.app
+
+    def fetch_portfolio(self, timeout=15):
+        app = self.ensure_connected(timeout)
+        with app._request_lock:
+            app.portfolio_items = []
+            app._acct_done.clear()
+            app.reqAccountUpdates(True, "")
+            app._acct_done.wait(timeout=timeout)
+            time.sleep(0.8)              # let any stragglers arrive
+            app.reqAccountUpdates(False, "")
+            time.sleep(0.3)
+        return list(app.portfolio_items)
+
+    def fetch_iv(self, contracts, farm_wait=5, data_wait=10):
+        """
+        Subscribe to all contracts on the persistent connection.
+        Strategy:
+          1. Send subscriptions (live data, type 1).
+          2. Wait up to farm_wait seconds for the farm to connect (2104).
+          3. If farm was connecting, resubscribe so it pushes fresh ticks.
+          4. Wait up to data_wait seconds for ticks; extend 5 s after first tick.
+        """
+        if not contracts:
+            return {}
+
+        app = self.ensure_connected()
+        base_req = 3000
+
+        with app._request_lock:
+            # 1 = Live, 2 = Frozen, 3 = Delayed, 4 = Delayed Frozen
+            # Use 2 (Frozen) to fetch last known IV when the market is closed
+            app.reqMarketDataType(2)
+            time.sleep(0.05)
+
+            def build_contracts():
+                opts = []
+                for i, c in enumerate(contracts):
+                    req = base_req + i
+                    opt = Contract()
+                    opt.symbol = c["symbol"]
+                    opt.secType = "OPT"
+                    opt.exchange = c.get("exchange") or "SMART"
+                    opt.currency = c.get("currency") or "USD"
+                    opt.lastTradeDateOrContractMonth = c["expiry"]
+                    opt.strike = float(c["strike"])
+                    opt.right = c["right"]
+                    opt.multiplier = str(c.get("multiplier", 100))
+                    key = (c["symbol"], c["expiry"],
+                           float(c["strike"]), c["right"])
+                    opts.append((req, opt, key))
+                return opts
+
+            contract_list = build_contracts()
+            req_map = {}   # reqId → (key, event)
+
+            def subscribe_all():
+                for req, opt, key in contract_list:
+                    ev = threading.Event()
+                    with app._iv_lock:
+                        app._iv_data.pop(req, None)
+                        app._iv_events[req] = ev
+                    # Requesting generic tick 106 (Impl Vol) with MarketDataType 2
+                    # (Frozen) is the most robust way to get IV off-hours.
+                    print(
+                        f"  [sub] reqId={req} {opt.symbol} {opt.right} {opt.strike} {opt.lastTradeDateOrContractMonth}")
+                    app.reqMktData(req, opt, "106", False, False, [])
+                    req_map[req] = (key, ev)
+                    # Stagger slightly to avoid TWS model throttling
+                    time.sleep(0.02)
+
+            def cancel_all():
+                for req in req_map:
+                    try:
+                        app.cancelMktData(req)
+                    except Exception:
+                        pass
+
+            # ── First subscription pass ──
+            subscribe_all()
+
+            # ── Wait briefly to see if farm was connecting ──
+            # 2104 (farm OK) and 2119 (connecting) come on reqId=-1 via error(),
+            # so we just pause to let the farm settle then resubscribe.
+            # If farm was already up, ticks arrive within ~1 s; skip resubscribe.
+            any_event = threading.Event()
+            # Peek: did anything fire within farm_wait?
+            deadline_farm = time.monotonic() + farm_wait
+            for req, (key, ev) in req_map.items():
+                remaining = deadline_farm - time.monotonic()
+                if remaining <= 0:
+                    break
+                if ev.wait(timeout=remaining):
+                    any_event.set()
+                    break
+
+            if not any_event.is_set():
+                # Farm was likely connecting — cancel and resubscribe now it's up
+                print(
+                    f"  [IV] no ticks in {farm_wait}s — farm may have just connected, resubscribing…")
+                cancel_all()
+                req_map.clear()
+                time.sleep(0.3)
+                subscribe_all()
+
+            # ── Final wait: data_wait seconds, extending 5 s after first tick ──
+            deadline = time.monotonic() + data_wait
+            first_tick_received = any_event.is_set()  # already got one above
+            for req, (key, ev) in req_map.items():
+                if ev.is_set():
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                fired = ev.wait(timeout=remaining)
+                if fired and not first_tick_received:
+                    first_tick_received = True
+                    new_deadline = time.monotonic() + 5
+                    if new_deadline > deadline:
+                        deadline = new_deadline
+                        print(f"  [IV] first tick — extending deadline +5s")
+
+            # Log and cancel
+            for req, (key, ev) in req_map.items():
+                print(
+                    f"  [wait] reqId={req} fired={ev.is_set()} iv={app._iv_data.get(req)}")
+            cancel_all()
+            time.sleep(0.1)
+
+        # Collect results
+        results = {}
+        for req, (key, ev) in req_map.items():
+            iv_raw = app._iv_data.get(req)
+            iv_pct = round(iv_raw * 100, 2) if iv_raw is not None else None
+            results[key] = iv_pct
+            sym, exp, strike, right = key
+            if iv_pct is not None:
+                print(f"  [IV] {sym} {right} {strike} {exp}: {iv_pct:.2f}%")
+            else:
+                print(f"  [IV] {sym} {right} {strike} {exp}: not available")
+
+        return results
+
+
+# ──────────────────────────────────────────────────────────
+# Classify portfolio items
+# ──────────────────────────────────────────────────────────
+
+def classify_items(items):
+    options_out = []
+    underlyings_out = []
+
+    for item in items:
+        c = item["contract"]
+        pos = item["position"]
+        avg_cost = item["averageCost"]
+
+        if c.secType == "OPT":
+            exp_raw = c.lastTradeDateOrContractMonth or ""
+            expiry_str = (f"{exp_raw[:4]}-{exp_raw[4:6]}-{exp_raw[6:8]}"
+                          if len(exp_raw) == 8 else exp_raw)
+            try:
+                mult = int(c.multiplier) if c.multiplier else 100
+            except (ValueError, TypeError):
+                mult = 100
+
+            # TWS averageCost for options is per-contract (already × multiplier).
+            # Divide by mult → per-share price for the UI formula:
+            #   P&L = pos × mult × (intrinsic − premium_per_share)
+            premium_per_share = avg_cost / mult if mult else avg_cost
+            print(f"  OPT {c.symbol} {c.right} {c.strike} {expiry_str}: "
+                  f"avgCost={avg_cost} mult={mult} "
+                  f"→ premium_per_share={premium_per_share:.6f}")
+
+            options_out.append({
+                "symbol":   c.symbol,
+                "type":     "call" if c.right == "C" else "put",
+                "pos":      pos,
+                "strike":   c.strike,
+                "premium":  premium_per_share,
+                "avgCost":  avg_cost,
+                "mult":     mult,
+                "iv":       None,
+                "expiry":   expiry_str,
+                "currency": c.currency,
+                "exchange": c.exchange,
+            })
+
+        elif c.secType in ("STK", "FUT", "CFD", "CASH"):
+            try:
+                mult = int(c.multiplier) if c.multiplier else 1
+            except (ValueError, TypeError):
+                mult = 1
+
+            underlyings_out.append({
+                "symbol":   c.symbol,
+                "secType":  c.secType,
+                "pos":      pos,
+                "entry":    avg_cost,
+                "avgCost":  avg_cost,
+                "mult":     mult,
+                "currency": c.currency,
+                "exchange": c.exchange,
+            })
+
+    options_out.sort(key=lambda o: (o["symbol"], o["expiry"], o["strike"]))
+    underlyings_out.sort(key=lambda u: u["symbol"])
+    return options_out, underlyings_out
+
+
+# ──────────────────────────────────────────────────────────
+# Flask proxy
+# ──────────────────────────────────────────────────────────
+
+def make_app(tws_host, tws_port):
+    flask_app = Flask(__name__)
+    CORS(flask_app)
+
+    ibkr = IBKRConnection(tws_host, tws_port, client_id=1)
+    _cache = {"options": [], "underlyings": []}
+
+    @flask_app.route("/ping")
+    def ping():
+        try:
+            ibkr.ensure_connected(timeout=5)
+            connected = True
+        except Exception:
+            connected = False
+        return jsonify({
+            "status":    "ok" if connected else "disconnected",
+            "connected": connected,
+            "time":      datetime.now(timezone.utc).isoformat(),
+        })
+
+    @flask_app.route("/portfolio")
+    def portfolio():
+        try:
+            items = ibkr.fetch_portfolio()
+            opts, unds = classify_items(items)
+            _cache["options"] = opts
+            _cache["underlyings"] = unds
+            return jsonify({
+                "options":     opts,
+                "underlyings": unds,
+                "fetchedAt":   datetime.now(timezone.utc).isoformat(),
+            })
+        except (ConnectionError, TimeoutError) as e:
+            return jsonify({"error": str(e)}), 503
+        except Exception as e:
+            return jsonify({"error": f"Unexpected error: {e}"}), 500
+
+    @flask_app.route("/iv")
+    def iv():
+        symbol = flask_request.args.get("symbol", "").upper()
+        if not symbol:
+            return jsonify({"error": "symbol param required"}), 400
+
+        opts = [o for o in _cache["options"] if o["symbol"] == symbol]
+        if not opts:
+            return jsonify({
+                "error": f"No options for {symbol} in cache — call /portfolio first"
+            }), 404
+
+        contracts = [{
+            "symbol":     o["symbol"],
+            "expiry":     o["expiry"].replace("-", ""),
+            "strike":     o["strike"],
+            "right":      "C" if o["type"] == "call" else "P",
+            "multiplier": o["mult"],
+            "exchange":   o.get("exchange") or "SMART",
+            "currency":   o.get("currency") or "USD",
+        } for o in opts]
+
+        print(f"[IV] Fetching IV for {len(contracts)} {symbol} option(s)…")
+        try:
+            raw = ibkr.fetch_iv(contracts)
+        except (ConnectionError, TimeoutError) as e:
+            return jsonify({"error": str(e)}), 503
+        except Exception as e:
+            return jsonify({"error": f"IV fetch error: {e}"}), 500
+
+        iv_out = {
+            f"{exp}|{strike}|{right}": pct
+            for (sym, exp, strike, right), pct in raw.items()
+        }
+        return jsonify({
+            "symbol":    symbol,
+            "iv":        iv_out,
+            "fetchedAt": datetime.now(timezone.utc).isoformat(),
+        })
+
+    return flask_app
+
+
+# ──────────────────────────────────────────────────────────
+# Entry point
+# ──────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="IBKR Payoff Builder proxy")
+    parser.add_argument("--tws-host",   default="127.0.0.1")
+    parser.add_argument("--tws-port",   default=7497, type=int,
+                        help="7497=TWS paper, 7496=TWS live, 4002=GW paper, 4001=GW live")
+    parser.add_argument("--proxy-port", default=5001, type=int)
+    args = parser.parse_args()
+
+    tws_str = f"{args.tws_host}:{args.tws_port}"
+    proxy_str = f"http://localhost:{args.proxy_port}"
+    print(f"""
+╔══════════════════════════════════════════════════════╗
+║       IBKR Payoff Builder Proxy  v1.4                ║
+╠══════════════════════════════════════════════════════╣
+║  TWS / Gateway  : {tws_str:<35}║
+║  Proxy URL      : {proxy_str:<35}║
+╚══════════════════════════════════════════════════════╝
+
+  Endpoints:
+    /ping        — health check (also verifies TWS connection)
+    /portfolio   — all positions (fast, no IV)
+    /iv?symbol=X — live IV for all options of ticker X
+                   (parallel subscriptions, 15 s shared deadline)
+
+  One persistent TWS connection is kept alive.
+  Press Ctrl+C to stop.
+""")
+
+    app = make_app(args.tws_host, args.tws_port)
+    app.run(host="127.0.0.1", port=args.proxy_port, debug=False)
