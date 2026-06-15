@@ -67,6 +67,7 @@ Use at your own risk.
 
 If you find this project useful and would like to support the work that went into its development, donations are appreciated.
 
-Ethereum / Base (ETH): `0xBA1903cEb50F92dDBde94498D14cdCc31fEFB7f9`
-
+Ethereum / Base (ETH): `0xBA1903cEb50F92dDBde94498D14cdCc31fEFB7f9`<br>
 Solana (SOL): `GrXWomqeGMzAcCCbYQ1Qq32t9qtsrsr4bTZTNcar1QLQ`
+
+<img src="screenshots/demo.png" width="800">
