@@ -3,12 +3,13 @@
 ibkr_proxy.py  —  Lightweight bridge between the Payoff Builder and IBKR TWS / IB Gateway
 ─────────────────────────────────────────────────────────────────────────────────────────────
 Usage:
-    python ibkr_proxy.py [--tws-host 127.0.0.1] [--tws-port 7497] [--proxy-port 5001]
+    python ibkr_proxy.py [--tws-host 127.0.0.1] [--tws-port 7497] [--proxy-port 5001] [--market-data-type 2]
 
 Defaults:
     TWS paper trading port : 7497   (live trading: 7496)
     IB Gateway paper port  : 4002   (live: 4001)
     Proxy listens on       : 5001   (must match the URL in the Payoff Builder)
+    Market data type      : 2 (Frozen)
 
 Requirements:
     pip install ibapi flask flask-cors
@@ -41,6 +42,12 @@ except ImportError:
     sys.exit("Missing ibapi. Run:  pip install ibapi")
 
 SENTINEL = 1.7976931348623157e+308
+MARKET_DATA_TYPE_LABELS = {
+    1: "Live",
+    2: "Frozen",
+    3: "Delayed",
+    4: "Delayed frozen",
+}
 
 
 # ──────────────────────────────────────────────────────────
@@ -169,10 +176,11 @@ class IBApp(EWrapper, EClient):
 # ──────────────────────────────────────────────────────────
 
 class IBKRConnection:
-    def __init__(self, host, port, client_id=1):
+    def __init__(self, host, port, client_id=1, market_data_type=2):
         self.host = host
         self.port = port
         self.client_id = client_id
+        self.market_data_type = market_data_type
         self.app = None
         self._thread = None
         self._lock = threading.Lock()   # protects connect/reconnect
@@ -233,8 +241,7 @@ class IBKRConnection:
 
         with app._request_lock:
             # 1 = Live, 2 = Frozen, 3 = Delayed, 4 = Delayed Frozen
-            # Use 2 (Frozen) to fetch last known IV when the market is closed
-            app.reqMarketDataType(2)
+            app.reqMarketDataType(self.market_data_type)
             time.sleep(0.05)
 
             def build_contracts():
@@ -368,7 +375,7 @@ class IBKRConnection:
         c.currency = currency
 
         with app._request_lock:
-            app.reqMarketDataType(2)
+            app.reqMarketDataType(self.market_data_type)
             with app._price_lock:
                 app._price_data.pop(req, None)
                 app._price_events[req] = ev
@@ -460,11 +467,12 @@ def classify_items(items):
 # Flask proxy
 # ──────────────────────────────────────────────────────────
 
-def make_app(tws_host, tws_port):
+def make_app(tws_host, tws_port, market_data_type=2):
     flask_app = Flask(__name__)
     CORS(flask_app)
 
-    ibkr = IBKRConnection(tws_host, tws_port, client_id=1)
+    ibkr = IBKRConnection(tws_host, tws_port, client_id=1,
+                          market_data_type=market_data_type)
     _cache = {"options": [], "underlyings": []}
 
     @flask_app.route("/ping")
@@ -593,16 +601,25 @@ if __name__ == "__main__":
     parser.add_argument("--tws-port",   default=7497, type=int,
                         help="7497=TWS paper, 7496=TWS live, 4002=GW paper, 4001=GW live")
     parser.add_argument("--proxy-port", default=5001, type=int)
+    parser.add_argument("--market-data-type", default=2, type=int,
+                        choices=[1, 2, 3, 4],
+                        help="1=Live, 2=Frozen (default), 3=Delayed, 4=Delayed frozen")
     args = parser.parse_args()
 
     tws_str = f"{args.tws_host}:{args.tws_port}"
     proxy_str = f"http://localhost:{args.proxy_port}"
+    md_label = MARKET_DATA_TYPE_LABELS.get(args.market_data_type, "unknown")
+
+    def banner_line(label, value):
+        return f"║  {label:<15}: {value:<35}║"
+
     print(f"""
 ╔══════════════════════════════════════════════════════╗
 ║       IBKR Payoff Builder Proxy  v1.4                ║
 ╠══════════════════════════════════════════════════════╣
-║  TWS / Gateway  : {tws_str:<35}║
-║  Proxy URL      : {proxy_str:<35}║
+{banner_line('TWS / Gateway', tws_str)}
+{banner_line('Proxy URL', proxy_str)}
+{banner_line('Market data', f'{args.market_data_type} ({md_label})')}
 ╚══════════════════════════════════════════════════════╝
 
   Endpoints:
@@ -616,5 +633,5 @@ if __name__ == "__main__":
   Press Ctrl+C to stop.
 """)
 
-    app = make_app(args.tws_host, args.tws_port)
+    app = make_app(args.tws_host, args.tws_port, args.market_data_type)
     app.run(host="127.0.0.1", port=args.proxy_port, debug=False)

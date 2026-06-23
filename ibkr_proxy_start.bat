@@ -1,1 +1,1 @@
-python ibkr_proxy.py --tws-port 4001
+python ibkr_proxy.py --tws-port 4001 --market-data-type 3

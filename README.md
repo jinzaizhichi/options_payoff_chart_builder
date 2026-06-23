@@ -35,15 +35,17 @@ Start the Python proxy bridge. By default, it attempts to connect to TWS paper t
 python ibkr_proxy.py
 ```
 
-_(Optional flags: use `--tws-port 7496` for live TWS, or `--tws-port 4001`/`4002` for Gateway)._
+_(Optional flags: use `--tws-port 7496` for live TWS, or `--tws-port 4001`/`4002` for Gateway.)_
 
-### 4. Open the UI
+_(You can also choose the IBKR market data type with `--market-data-type 1|2|3|4` where `1=Live`, `2=Frozen` (default), `3=Delayed`, and `4=Delayed frozen`.)_
 
-Simply open the `options_payoff_ibkr.html` file in any modern web browser.
+_For example, to use delayed data from IB Gateway:_
 
-- Click **Connect** in the top panel to link to the running Python proxy.
-- Use **Import from IBKR** to pull in your portfolio legs, or add legs manually.
-- Click **IV** next to a ticker in the ticker bar to fetch implied volatility from IBKR and enable the Black-Scholes curve slider.
+```bash
+python ibkr_proxy.py --tws-port 4001 --market-data-type 3
+```
+
+_The included `ibkr_proxy_start.bat` already launches the proxy with delayed data via `--market-data-type 3`._
 
 ## Features
 
