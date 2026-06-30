@@ -69,7 +69,9 @@ body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color
 .ticker-add-btn:hover{background:#2a2a2a}
 
 /* ── chart ── */
-.chart-wrap{position:relative;width:100%;height:340px;border:.5px solid #525250;border-radius:6px;overflow:hidden;margin-bottom:1.25rem;background:#111}
+.chart-wrap{position:relative;width:100%;height:340px;border:.5px solid #525250;border-radius:6px;overflow:hidden;margin-bottom:1.25rem;background:#111;cursor:grab}
+.chart-wrap.panning{cursor:grabbing}
+.chart-zoom-hint{font-size:10px;color:#4a4a48;text-align:right;margin-top:-1rem;margin-bottom:1.25rem;font-family:monospace}
 .crosshair-overlay{position:absolute;inset:0;pointer-events:none}
 .crosshair-line-v{position:absolute;top:0;bottom:0;width:1px;background:rgba(220,220,210,.3);display:none}
 .crosshair-line-h{position:absolute;left:0;right:0;height:1px;background:rgba(220,220,210,.15);display:none}
@@ -253,7 +255,7 @@ body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color
   </div>
 
   <!-- ── CHART ── -->
-  <div class="chart-wrap" id="chartWrap">
+  <div class="chart-wrap" id="chartWrap" title="Scroll to zoom · drag to pan · double-click to reset">
     <canvas id="payoffChart"></canvas>
     <div class="crosshair-overlay">
       <div class="crosshair-line-v" id="xhairV"></div>
@@ -273,6 +275,7 @@ body{background:#1a1a1a;font-family:'Courier New',monospace;font-size:13px;color
       </div>
     </div>
   </div>
+  <div class="chart-zoom-hint">scroll to zoom · drag to pan · double-click to reset</div>
 
   <!-- ── METRICS ── -->
   <div class="metrics">
@@ -898,13 +901,79 @@ function updateChart(){
 }
 
 /* ═══════════════════════════════════════════════════════
+   ZOOM & PAN (mouse wheel + drag, on our own chart — no plugin)
+═══════════════════════════════════════════════════════ */
+function setManualRange(lo,hi){
+  if(!(isFinite(lo)&&isFinite(hi))||hi-lo<1e-6) return;
+  if(lo<0){ hi-=lo; lo=0; } // keep span intact, just slide window
+  document.getElementById('rangeAuto').checked=false;
+  document.getElementById('rangeMin').disabled=false;
+  document.getElementById('rangeMax').disabled=false;
+  document.getElementById('rangeMin').value=lo.toFixed(4);
+  document.getElementById('rangeMax').value=hi.toFixed(4);
+  updateChart();
+}
+function zoomAt(pivot,factor){
+  const range=getRange(); if(!range) return;
+  const {lo,hi}=range;
+  setManualRange(pivot-(pivot-lo)*factor, pivot+(hi-pivot)*factor);
+}
+function resetZoom(){
+  document.getElementById('rangeAuto').checked=true;
+  document.getElementById('rangeMin').disabled=true;
+  document.getElementById('rangeMax').disabled=true;
+  updateChart();
+}
+let isPanning=false, panStartX=0, panStartLo=0, panStartHi=0;
+
+/* ═══════════════════════════════════════════════════════
    CROSSHAIR
 ═══════════════════════════════════════════════════════ */
 function setupCrosshair(){
   const wrap=document.getElementById('chartWrap');
   function hide(){ document.getElementById('xhairV').style.display='none'; document.getElementById('xhairH').style.display='none'; document.getElementById('xhairTip').style.display='none'; }
-  wrap.addEventListener('mouseleave',hide);
+
+  // scroll wheel: zoom in/out centered on cursor
+  wrap.addEventListener('wheel', e=>{
+    if(!chart) return;
+    const rect=wrap.getBoundingClientRect();
+    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    const ca=chart.chartArea;
+    if(mx<ca.left||mx>ca.right||my<ca.top||my>ca.bottom) return;
+    e.preventDefault();
+    const pivot=chart.scales.x.getValueForPixel(mx);
+    if(!isFinite(pivot)) return;
+    zoomAt(pivot, e.deltaY>0?1.15:1/1.15);
+  },{passive:false});
+
+  // click + drag: pan
+  wrap.addEventListener('mousedown', e=>{
+    if(!chart||e.button!==0) return;
+    const rect=wrap.getBoundingClientRect();
+    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    const ca=chart.chartArea;
+    if(mx<ca.left||mx>ca.right||my<ca.top||my>ca.bottom) return;
+    const range=getRange(); if(!range) return;
+    isPanning=true; panStartX=mx; panStartLo=range.lo; panStartHi=range.hi;
+    wrap.classList.add('panning'); hide(); e.preventDefault();
+  });
+  window.addEventListener('mousemove', e=>{
+    if(!isPanning||!chart) return;
+    const rect=wrap.getBoundingClientRect();
+    const mx=e.clientX-rect.left;
+    const ca=chart.chartArea, pxSpan=ca.right-ca.left;
+    if(pxSpan<=0) return;
+    const dPrice=-((mx-panStartX)/pxSpan)*(panStartHi-panStartLo);
+    setManualRange(panStartLo+dPrice, panStartHi+dPrice);
+  });
+  window.addEventListener('mouseup', ()=>{ if(isPanning){ isPanning=false; wrap.classList.remove('panning'); } });
+
+  // double-click: reset to auto range
+  wrap.addEventListener('dblclick', e=>{ e.preventDefault(); resetZoom(); });
+
+  wrap.addEventListener('mouseleave',()=>{ if(!isPanning) hide(); });
   wrap.addEventListener('mousemove',e=>{
+    if(isPanning) return;
     if(!chart||!currentPrices.length){hide();return;}
     const rect=wrap.getBoundingClientRect();
     let mx=e.clientX-rect.left;
